@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Write(/Users/dawumnam/Library/Mobile Documents/com~apple~CloudDocs/**)"
+    ]
+  }
+}

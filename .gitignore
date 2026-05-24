@@ -1,0 +1,17 @@
+node_modules/
+.env
+extracted/
+dist/
+*.hwpx.bak
+.DS_Store
+austria/
+*.hwpx
+*.mp3
+*.mp4
+*_work/
+chunks/
+chunks_plan.json
+chunks_uploaded.json
+stt_results/
+translations/
+translations.json
