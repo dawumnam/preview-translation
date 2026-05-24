@@ -12,7 +12,7 @@ export interface Translation {
   confidence: "high" | "medium" | "low";
 }
 
-const MODEL = "gemini-3.1-pro-preview";
+const MODEL = "gemini-3.5-flash";
 
 function buildPrompt(scene: SceneChunk): string {
   const markerList = scene.markers
@@ -94,6 +94,7 @@ async function callGemini(
     ],
     config: {
       temperature: 0.2,
+      thinkingConfig: { thinkingLevel: "HIGH" },
     },
   });
 

@@ -6,7 +6,7 @@ const { values } = parseArgs({
   options: {
     uri: { type: "string" },
     file: { type: "string" },
-    model: { type: "string", default: "gemini-2.5-flash" },
+    model: { type: "string", default: "gemini-3.5-flash" },
   },
   strict: true,
 });
@@ -55,7 +55,10 @@ const response = await ai.models.generateContent({
       ],
     },
   ],
-  config: { temperature: 0.2 },
+  config: {
+    temperature: 0.2,
+    thinkingConfig: { thinkingLevel: "HIGH" },
+  },
 });
 
 const text = response.text?.trim() || "";

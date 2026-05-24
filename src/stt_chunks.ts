@@ -3,7 +3,7 @@ import path from "path";
 import { getGeminiClient } from "./gemini";
 import { formatTimestamp } from "./parser";
 
-const MODEL = "gemini-3-flash-preview";
+const MODEL = "gemini-3.5-flash";
 const MAX_OUTPUT_TOKENS = 16384;
 
 const uploadedPath = process.argv[2];
@@ -97,7 +97,11 @@ for (let i = 0; i < plan.chunks.length; i++) {
             ],
           },
         ],
-        config: { temperature: 0.2, maxOutputTokens: MAX_OUTPUT_TOKENS },
+        config: {
+          temperature: 0.2,
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+          thinkingConfig: { thinkingLevel: "HIGH" },
+        },
       });
       text = response.text?.trim() || "";
       break;
