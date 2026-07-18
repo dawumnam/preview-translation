@@ -41,9 +41,24 @@ Other character abbreviations (검여, 검남, 수남, etc.) are episode-specifi
    - For markers spanning a range (with `endTimestamp`), combine the relevant speech into one coherent translation
 4. Assess confidence: "high" if clear, "medium" if ambiguous, "low" if uncertain
 
+## Step 3: Split long translations into TC segments
+
+The editors need long speech broken into smaller pieces, each with its own timecode. For each marker's translation:
+
+- **≤80 chars** → one segment
+- **80–200 chars** → split into 2 segments
+- **>200 chars** → split into 3 segments
+
+Splitting rules:
+1. Cut at a **topic shift** if there is one (e.g. describing the farm → introducing a person). Otherwise cut at the **sentence boundary closest to the midpoint**. NEVER cut mid-sentence.
+2. Keep segments roughly balanced — each within ±30% of equal share. A 10-char + 190-char split is useless to the editor.
+3. Each segment's `timestamp` (seconds from start of the original audio) comes from the **STT block where that part of the speech begins**: STT block clip-time + the chunk's `audio_start`. These are real measured times, not estimates.
+4. The first segment's timestamp is the marker's own timestamp.
+5. If one long STT block covers multiple segments (no block boundary near your cut), estimate the time proportionally within the block and downgrade that entry's confidence to "medium".
+
 ## Output format
 
-Return a JSON array (and nothing else outside the JSON) of translation entries:
+Return a JSON array (and nothing else outside the JSON) of translation entries. Each entry uses `segments` — an array of `{timestamp, text}` — even when there is only one segment:
 
 ```json
 [
@@ -53,7 +68,10 @@ Return a JSON array (and nothing else outside the JSON) of translation entries:
     "charName": "검여",
     "timestamp": 304,
     "scene": "의상실",
-    "translation": "Korean translation here",
+    "segments": [
+      { "timestamp": 304, "text": "First part of the translation, cut at a sentence boundary." },
+      { "timestamp": 331, "text": "Second part, starting where that speech begins in the audio." }
+    ],
     "confidence": "high"
   }
 ]

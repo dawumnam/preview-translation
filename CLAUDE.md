@@ -51,7 +51,8 @@ The `mapper` agent (`.claude/agents/mapper.md`) processes a single chunk:
 - Reads markers + STT transcript together — no explicit timestamp arithmetic needed
 - Uses STT-provided Korean translations as a starting point
 - Improves translations using surrounding Korean dialogue context
-- Writes `[{markerIndex, language, charName, timestamp, scene, translation, confidence}]` to `translations/<chunk_id>.json`
+- Splits long translations into TC segments (≤80 chars = 1, 80–200 = 2, >200 = 3; cut at topic/sentence boundaries; segment timestamps from STT block start times)
+- Writes `[{markerIndex, language, charName, timestamp, scene, segments: [{timestamp, text}], confidence}]` to `translations/<chunk_id>.json`
 
 ## Key files
 
@@ -73,6 +74,10 @@ The `mapper` agent (`.claude/agents/mapper.md`) processes a single chunk:
 ## Confidence
 
 Mapper agents return `"high"`, `"medium"`, or `"low"` confidence per translation. In the final HWPX, `apply.ts` appends `??` to low-confidence translations so editors can review them.
+
+## TC segments
+
+Long translations are split by mapper agents into multiple segments, each with its own timecode (editor request: long blocks are hard to edit). In the final HWPX, segment 1 replaces the marker text as before; segments 2..N are inserted as new paragraphs formatted `TC<tab>charName<tab>@@(lang) text` (TC in script format: MMSS, or HMMSS past one hour). `replace.ts` handles the paragraph cloning; `merge_translations.ts` validates segment structure (ascending timestamps, warns >220 chars). Legacy single-`translation` entries still work.
 
 ## Conventions
 

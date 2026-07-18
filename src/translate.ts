@@ -2,13 +2,19 @@ import type { GoogleGenAI } from "@google/genai";
 import type { SceneChunk } from "./parser";
 import { formatTimestamp } from "./parser";
 
+export interface TranslationSegment {
+  timestamp: number; // seconds from start of audio, from the STT block where this part begins
+  text: string;
+}
+
 export interface Translation {
   markerIndex: number;
   language: string;
   charName: string;
   timestamp: number;
   scene: string;
-  translation: string;
+  translation?: string; // legacy single-block format
+  segments?: TranslationSegment[]; // split format: long speech broken at sentence/topic boundaries
   confidence: "high" | "medium" | "low";
 }
 
@@ -119,7 +125,7 @@ async function callGemini(
   }
 
   return results
-    .map((r) => {
+    .map((r): Translation | null => {
       const marker = scene.markers[r.index];
       if (!marker) {
         console.warn(
