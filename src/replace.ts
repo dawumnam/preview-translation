@@ -46,7 +46,7 @@ export function replaceMarkers(
   const idPattern = [...boldIds].join("|");
   const regex = new RegExp(
     `(<hp:run\\s+charPrIDRef="(${idPattern})"><hp:t>(?:[^<]|<hp:tab[^/]*\\/>)*)` +
-    `(@@(?:\\([^)]+\\))?)[^<]*(</hp:t>)`,
+    `(@@(?:\\([^)]+\\))?)(?:[^<]|<hp:tab[^/]*\\/>)*(</hp:t>)`,
     "g",
   );
 
