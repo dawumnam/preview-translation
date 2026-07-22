@@ -1,4 +1,5 @@
 import { parseArgs } from "util";
+import { ThinkingLevel } from "@google/genai";
 import { getGeminiClient, uploadMedia } from "./gemini";
 
 const { values } = parseArgs({
@@ -6,7 +7,7 @@ const { values } = parseArgs({
   options: {
     uri: { type: "string" },
     file: { type: "string" },
-    model: { type: "string", default: "gemini-3.5-flash" },
+    model: { type: "string", default: "gemini-3.6-flash" },
   },
   strict: true,
 });
@@ -57,7 +58,7 @@ const response = await ai.models.generateContent({
   ],
   config: {
     temperature: 0.2,
-    thinkingConfig: { thinkingLevel: "HIGH" },
+    thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
   },
 });
 

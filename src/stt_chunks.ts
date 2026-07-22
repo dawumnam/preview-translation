@@ -1,9 +1,10 @@
 import fs from "fs";
 import path from "path";
+import { ThinkingLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini";
 import { formatTimestamp } from "./parser";
 
-const MODEL = "gemini-3.5-flash";
+const MODEL = "gemini-3.6-flash";
 const MAX_OUTPUT_TOKENS = 16384;
 
 const uploadedPath = process.argv[2];
@@ -100,7 +101,7 @@ for (let i = 0; i < plan.chunks.length; i++) {
         config: {
           temperature: 0.2,
           maxOutputTokens: MAX_OUTPUT_TOKENS,
-          thinkingConfig: { thinkingLevel: "HIGH" },
+          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
         },
       });
       text = response.text?.trim() || "";

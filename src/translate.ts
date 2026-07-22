@@ -1,4 +1,4 @@
-import type { GoogleGenAI } from "@google/genai";
+import { ThinkingLevel, type GoogleGenAI } from "@google/genai";
 import type { SceneChunk } from "./parser";
 import { formatTimestamp } from "./parser";
 
@@ -18,7 +18,7 @@ export interface Translation {
   confidence: "high" | "medium" | "low";
 }
 
-const MODEL = "gemini-3.5-flash";
+const MODEL = "gemini-3.6-flash";
 
 function buildPrompt(scene: SceneChunk): string {
   const markerList = scene.markers
@@ -100,7 +100,7 @@ async function callGemini(
     ],
     config: {
       temperature: 0.2,
-      thinkingConfig: { thinkingLevel: "HIGH" },
+      thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
     },
   });
 
