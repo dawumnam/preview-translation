@@ -69,6 +69,7 @@ The `mapper` agent (`.claude/agents/mapper.md`) processes a single chunk:
 | `src/extract_chunks.ts` | CLI: ffmpeg extract + Gemini upload (supports .mp3 and .mp4 input) |
 | `src/stt_chunks.ts` | CLI: batch STT on uploaded chunks |
 | `src/merge_translations.ts` | CLI: merge per-chunk translations → translations.json |
+| `src/sentence_stt.ts` | CLI: sentence-by-sentence STT for one time window (per-sentence TC) |
 | `.claude/agents/mapper.md` | Mapper agent — translates one chunk's markers |
 
 ## Confidence
@@ -78,6 +79,26 @@ Mapper agents return `"high"`, `"medium"`, or `"low"` confidence per translation
 ## TC segments
 
 Long translations are split by mapper agents into multiple segments, each with its own timecode (editor request: long blocks are hard to edit). In the final HWPX, segment 1 replaces the marker text as before; segments 2..N are inserted as new paragraphs formatted `TC<tab>charName<tab>@@(lang) text` (TC in script format: MMSS, or HMMSS past one hour). `replace.ts` handles the paragraph cloning; `merge_translations.ts` validates segment structure (ascending timestamps, warns >220 chars). Legacy single-`translation` entries still work.
+
+### Per-sentence TC (문장별 타임체크)
+
+Editors sometimes ask for a timecode on *every sentence*, which is finer than the default 1–3 segment split. `stt_chunks.ts` groups a whole monologue into one block, so its timestamps are too coarse for this. Run `src/sentence_stt.ts` on a tight window around the speech instead — it returns one entry per sentence with a measured start time, already re-based onto the original recording:
+
+```bash
+bun src/sentence_stt.ts <mp4|mp3> <start_sec> <end_sec> <out.json>
+```
+
+Then build `segments` by mapping each sentence of the translation onto those measured starts. Where two sentences of Korean share one sentence of source speech, estimate the split inside that block and mark the entry `"medium"`.
+
+## Re-running over an already-translated script
+
+When a script already carries translations (e.g. a ChatGPT pass) parked on a tab-indented paragraph under each marker, pass `--replace-existing` to `apply.ts`. It drops those paragraphs so the new TC lines replace the old block instead of duplicating it:
+
+```bash
+bun src/apply.ts "<script>.hwpx" <hwpx-dir>/translations.json --replace-existing
+```
+
+Excerpt files pasted out of a full script often lose the bold styling that marker detection keys on; `hwpx.ts` falls back to whichever styles actually carry an `@@` marker, so these files still parse.
 
 ## Conventions
 
