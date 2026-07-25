@@ -31,10 +31,18 @@ interface SplitInfo {
   translation: Translation;
 }
 
+export interface ReplaceOptions {
+  // Drop the indented translation paragraph(s) already sitting under a marker
+  // (e.g. a ChatGPT pass) so the new TC segments replace them instead of
+  // duplicating them.
+  replaceExisting?: boolean;
+}
+
 export function replaceMarkers(
   xml: string,
   translations: Translation[],
-  boldIds: Set<string>,
+  markerStyleIds: Set<string>,
+  options: ReplaceOptions = {},
 ): string {
   // Build map: global marker index -> translation
   const translationMap = new Map<number, Translation>();
@@ -42,8 +50,8 @@ export function replaceMarkers(
     translationMap.set(t.markerIndex, t);
   }
 
-  // Match bold <hp:run> containing @@ markers (with optional language code) in document order
-  const idPattern = [...boldIds].join("|");
+  // Match marker-styled <hp:run> containing @@ markers (with optional language code) in document order
+  const idPattern = [...markerStyleIds].join("|");
   const regex = new RegExp(
     `(<hp:run\\s+charPrIDRef="(${idPattern})"><hp:t>(?:[^<]|<hp:tab[^/]*\\/>)*)` +
     `(@@(?:\\([^)]+\\))?)(?:[^<]|<hp:tab[^/]*\\/>)*(</hp:t>)`,
@@ -77,8 +85,10 @@ export function replaceMarkers(
       const confidenceSuffix = t.confidence === "low" ? " ??" : "";
       const first = segments[0];
 
+      // Pass 2 needs to find this paragraph again to append segment clones
+      // and/or drop an existing translation block sitting under it
       let placeholder = "";
-      if (segments.length > 1) {
+      if (segments.length > 1 || options.replaceExisting) {
         splits.set(idx, { charPrId, markerPrefix, translation: t });
         placeholder = `${PH_OPEN}SPLIT${idx}${PH_CLOSE}`;
       }
@@ -117,14 +127,42 @@ export function replaceMarkers(
       })
       .join("");
 
+    const resumeAt = options.replaceExisting
+      ? skipExistingTranslation(newXml, paraEnd)
+      : paraEnd;
+
     newXml =
       newXml.slice(0, paraEnd).replace(ph, "") +
       clones +
-      newXml.slice(paraEnd);
+      newXml.slice(resumeAt);
   }
 
   // Strip cached line layout metrics so the viewer recalculates for new text lengths
   return stripLineSegArrays(newXml);
+}
+
+// An earlier translation pass may have parked the Korean text on its own
+// tab-indented paragraph(s) below the marker. Returns the offset past them.
+function skipExistingTranslation(xml: string, from: number): number {
+  let pos = from;
+  for (;;) {
+    const start = xml.indexOf("<hp:p", pos);
+    if (start === -1 || xml.slice(pos, start).trim() !== "") return pos;
+    const end = xml.indexOf("</hp:p>", start);
+    if (end === -1) return pos;
+    const paraEnd = end + "</hp:p>".length;
+    if (!isIndentedTranslation(xml.slice(start, paraEnd))) return pos;
+    pos = paraEnd;
+  }
+}
+
+function isIndentedTranslation(para: string): boolean {
+  const raw = [...para.matchAll(/<hp:t>([\s\S]*?)<\/hp:t>/g)]
+    .map((m) => m[1])
+    .join("");
+  if (!raw.startsWith("<hp:tab")) return false; // not an indented continuation
+  if (raw.includes("@@")) return false; // a marker of its own
+  return /[가-힣]/.test(raw.replace(/<[^>]+>/g, ""));
 }
 
 function getSegments(t: Translation): TranslationSegment[] {

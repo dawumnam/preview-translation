@@ -8,6 +8,6 @@ if (!hwpxPath) {
 }
 
 const hwpx = extractHwpx(hwpxPath);
-const { markers, scenes } = parseMarkers(hwpx.xml, hwpx.boldIds);
+const { markers, scenes } = parseMarkers(hwpx.xml, hwpx.markerStyleIds);
 
 console.log(JSON.stringify({ markers, scenes }, null, 2));

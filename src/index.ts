@@ -37,7 +37,7 @@ async function main() {
 
   // Step 2: Parse markers
   console.log("Parsing markers...");
-  const { markers, scenes } = parseMarkers(hwpx.xml, hwpx.boldIds);
+  const { markers, scenes } = parseMarkers(hwpx.xml, hwpx.markerStyleIds);
   console.log(
     `Found ${markers.length} bold+blue markers in ${scenes.length} scenes`,
   );
@@ -79,7 +79,7 @@ async function main() {
 
   // Step 6: Replace markers in XML
   console.log("Replacing markers...");
-  const newXml = replaceMarkers(hwpx.xml, translations, hwpx.boldIds);
+  const newXml = replaceMarkers(hwpx.xml, translations, hwpx.markerStyleIds);
 
   // Step 7: Repack HWPX
   const outPath = repackHwpx(hwpx, newXml);

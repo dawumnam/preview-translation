@@ -126,7 +126,7 @@ const resolvedMp3Path = path.resolve(mp3Path);
 const baseDir = path.dirname(resolvedHwpxPath);
 
 const hwpx = extractHwpx(resolvedHwpxPath);
-const { markers, scenes } = parseMarkers(hwpx.xml, hwpx.boldIds);
+const { markers, scenes } = parseMarkers(hwpx.xml, hwpx.markerStyleIds);
 
 console.error(
   `Parsed ${markers.length} markers in ${scenes.length} scenes`,

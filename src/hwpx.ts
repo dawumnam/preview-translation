@@ -5,7 +5,7 @@ export interface HwpxData {
   zip: AdmZip;
   xml: string;
   filePath: string;
-  boldIds: Set<string>;
+  markerStyleIds: Set<string>;
 }
 
 export function extractBoldIds(zip: AdmZip): Set<string> {
@@ -21,13 +21,30 @@ export function extractBoldIds(zip: AdmZip): Set<string> {
   return ids;
 }
 
+// Markers are normally bold. Excerpt files pasted out of a full script sometimes
+// lose that styling, so fall back to whichever styles actually carry an @@ marker.
+export function resolveMarkerStyleIds(
+  xml: string,
+  boldIds: Set<string>,
+): Set<string> {
+  const markerRunIds = new Set<string>();
+  const re = /<hp:run\s+charPrIDRef="(\d+)">([\s\S]*?)<\/hp:run>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    if (m[2].includes("@@")) markerRunIds.add(m[1]);
+  }
+
+  const bold = [...markerRunIds].filter((id) => boldIds.has(id));
+  return bold.length > 0 ? new Set(bold) : markerRunIds;
+}
+
 export function extractHwpx(filePath: string): HwpxData {
   const zip = new AdmZip(filePath);
   const entry = zip.getEntry("Contents/section0.xml");
   if (!entry) throw new Error("Contents/section0.xml not found in HWPX");
   const xml = entry.getData().toString("utf-8");
-  const boldIds = extractBoldIds(zip);
-  return { zip, xml, filePath, boldIds };
+  const markerStyleIds = resolveMarkerStyleIds(xml, extractBoldIds(zip));
+  return { zip, xml, filePath, markerStyleIds };
 }
 
 export function repackHwpx(data: HwpxData, newXml: string): string {
