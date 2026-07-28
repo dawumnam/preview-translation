@@ -69,6 +69,7 @@ The `mapper` agent (`.claude/agents/mapper.md`) processes a single chunk:
 | `src/extract_chunks.ts` | CLI: ffmpeg extract + Gemini upload (supports .mp3 and .mp4 input) |
 | `src/stt_chunks.ts` | CLI: batch STT on uploaded chunks |
 | `src/merge_translations.ts` | CLI: merge per-chunk translations → translations.json |
+| `src/align_sentences.ts` | CLI: align an already-confirmed Korean translation to audio, sentence by sentence (문장별 TC) |
 | `.claude/agents/mapper.md` | Mapper agent — translates one chunk's markers |
 
 ## Confidence
@@ -78,6 +79,33 @@ Mapper agents return `"high"`, `"medium"`, or `"low"` confidence per translation
 ## TC segments
 
 Long translations are split by mapper agents into multiple segments, each with its own timecode (editor request: long blocks are hard to edit). In the final HWPX, segment 1 replaces the marker text as before; segments 2..N are inserted as new paragraphs formatted `TC<tab>charName<tab>@@(lang) text` (TC in script format: MMSS, or HMMSS past one hour). `replace.ts` handles the paragraph cloning; `merge_translations.ts` validates segment structure (ascending timestamps, warns >220 chars). Legacy single-`translation` entries still work.
+
+## Marker char styles
+
+`extractBoldIds()` assumes marker runs are bold. Several hand-edited scripts break that
+assumption (the `@@` run is left in a plain char style), which makes `markers.ts` /
+`apply.ts` silently find zero markers. Check the actual `charPrIDRef` of the `@@` runs
+and override:
+
+```bash
+MARKER_CHARPR_IDS=8,14,19 bun src/apply.ts <hwpx> <translations.json>
+```
+
+Scripts are also inconsistent about the space in `@@ (카)` vs `@@(카)`; both parse.
+
+## Re-timing an already-translated script (문장별 TC)
+
+Editors sometimes send back a script where the translation is already written into the
+marker line and only ask for per-sentence timecodes. The full STT → mapper pipeline is
+overkill for this. Instead:
+
+1. Run STT on a generous window around the marker TC to locate the speech.
+2. Cut a tight clip around it and run `src/align_sentences.ts` with the confirmed Korean
+   split into sentences — it returns `[{timestamp, text}]` in absolute seconds.
+3. Drop those into `translations.json` as `segments` and run `apply.ts`.
+
+`replaceMarkers()` drops any runs that follow the marker run in the same paragraph, so a
+previously pasted draft translation on the marker line is replaced rather than duplicated.
 
 ## Conventions
 

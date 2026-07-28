@@ -31,6 +31,31 @@ interface SplitInfo {
   translation: Translation;
 }
 
+// A marker's line runs to the end of its paragraph, so any runs after the
+// marker run hold text the translation replaces (e.g. a previously pasted
+// draft translation). Drop them before substituting.
+function dropRunsAfterMarker(xml: string, markerIds: Set<string>): string {
+  return xml.replace(/<hp:p\b[^>]*>[\s\S]*?<\/hp:p>/g, (para) => {
+    const runRe = /<hp:run\s+charPrIDRef="(\d+)">[\s\S]*?<\/hp:run>/g;
+    let m: RegExpExecArray | null;
+    let markerEnd = -1;
+
+    while ((m = runRe.exec(para))) {
+      if (markerIds.has(m[1]) && m[0].includes("@@")) {
+        markerEnd = m.index + m[0].length;
+        break;
+      }
+    }
+    if (markerEnd === -1) return para;
+
+    const head = para.slice(0, markerEnd);
+    const tail = para
+      .slice(markerEnd)
+      .replace(/<hp:run\s+charPrIDRef="\d+">[\s\S]*?<\/hp:run>/g, "");
+    return head + tail;
+  });
+}
+
 export function replaceMarkers(
   xml: string,
   translations: Translation[],
@@ -46,7 +71,7 @@ export function replaceMarkers(
   const idPattern = [...boldIds].join("|");
   const regex = new RegExp(
     `(<hp:run\\s+charPrIDRef="(${idPattern})"><hp:t>(?:[^<]|<hp:tab[^/]*\\/>)*)` +
-    `(@@(?:\\([^)]+\\))?)(?:[^<]|<hp:tab[^/]*\\/>)*(</hp:t>)`,
+    `(@@\\s*(?:\\([^)]+\\))?)(?:[^<]|<hp:tab[^/]*\\/>)*(</hp:t>)`,
     "g",
   );
 
@@ -55,7 +80,7 @@ export function replaceMarkers(
 
   // Pass 1: insert first segment into each marker run; tag multi-segment
   // markers with a placeholder for paragraph insertion in pass 2
-  let newXml = xml.replace(
+  let newXml = dropRunsAfterMarker(xml, boldIds).replace(
     regex,
     (
       _match,

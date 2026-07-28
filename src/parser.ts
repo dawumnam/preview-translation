@@ -127,7 +127,8 @@ export function parseMarkers(xml: string, boldIds?: Set<string>): {
           paraHasMarker = true;
 
           if (markerStyleIds.has(charPrId)) {
-            const markerMatch = fullClean.match(/@@(?:\(([^)]+)\))?(.*)/);
+            // Scripts are inconsistent about the space in "@@ (카)"
+            const markerMatch = fullClean.match(/@@\s*(?:\(([^)]+)\))?(.*)/);
             if (markerMatch) {
               const language = markerMatch[1] || "영";
               const suffix = markerMatch[2].trim();

@@ -8,7 +8,22 @@ export interface HwpxData {
   boldIds: Set<string>;
 }
 
+// Marker runs are normally bold, but some hand-edited scripts leave them in a
+// plain char style. MARKER_CHARPR_IDS=8,14,19 overrides the bold heuristic.
+function envMarkerIds(): Set<string> | null {
+  const raw = process.env.MARKER_CHARPR_IDS;
+  if (!raw) return null;
+  const ids = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return ids.length ? new Set(ids) : null;
+}
+
 export function extractBoldIds(zip: AdmZip): Set<string> {
+  const override = envMarkerIds();
+  if (override) return override;
+
   const header = zip.getEntry("Contents/header.xml");
   if (!header) return new Set();
   const headerXml = header.getData().toString("utf-8");
