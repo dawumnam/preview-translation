@@ -10,6 +10,16 @@ Korean variety show production script translator. The HWPX document contains a s
 
 Claude Code is the **orchestrator**. Deterministic steps are CLI scripts; the intelligent mapping step (STT → marker assignment) is delegated to parallel `mapper` subagents.
 
+## HWP input
+
+If the script arrives as `.hwp` (not `.hwpx`), convert it first:
+
+```bash
+tools/hwp2hwpx/convert.sh <input.hwp>   # writes <input>.hwpx next to it
+```
+
+Uses the bundled [hwp2hwpx](https://github.com/neolord0/hwp2hwpx) Java sources (`tools/hwp2hwpx/upstream/`). First run auto-builds: downloads hwplib/hwpxlib jars from Maven Central and compiles with the Homebrew OpenJDK (`/opt/homebrew/opt/openjdk` — `brew install openjdk` if missing).
+
 ## Pipeline
 
 All intermediate outputs are written next to the input HWPX file (not CWD). Paths in plan JSON are absolute, so steps can resume from any working directory.
