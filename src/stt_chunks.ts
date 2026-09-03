@@ -1,11 +1,13 @@
 import fs from "fs";
 import path from "path";
-import { ThinkingLevel } from "@google/genai";
+import { ThinkingLevel, Type } from "@google/genai";
 import { getGeminiClient } from "./gemini";
 import { formatTimestamp } from "./parser";
 
 const MODEL = "gemini-3.8-flash";
-const MAX_OUTPUT_TOKENS = 16384;
+// Caps runaway output (see pre-flight checklist), but must also cover thinking
+// tokens, which count against this budget — HIGH thinking alone can take ~7k.
+const MAX_OUTPUT_TOKENS = 32768;
 
 const uploadedPath = process.argv[2];
 if (!uploadedPath) {
@@ -23,6 +25,59 @@ if (!fs.existsSync(outDir)) {
 }
 
 const ai = getGeminiClient();
+
+// Structured output: without this the model picks a different markdown layout
+// per chunk, and only emits an end time when it feels like it.
+const RESPONSE_SCHEMA = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      start: {
+        type: Type.STRING,
+        description: "Start of the utterance within this clip, MM:SS",
+      },
+      end: {
+        type: Type.STRING,
+        description:
+          "End of the utterance within this clip, MM:SS. When the speech stops, not when the next speaker starts.",
+      },
+      speaker: {
+        type: Type.STRING,
+        description: "Speaker abbreviation, or 스태프 / 제작진 for crew",
+      },
+      language: {
+        type: Type.STRING,
+        description:
+          "Language actually spoken: 한국어, 베트남어, 영어, 독일어, etc. Use a slash for code-switching, e.g. 베트남어/한국어",
+      },
+      text: { type: Type.STRING, description: "Verbatim transcription" },
+      translation: {
+        type: Type.STRING,
+        description:
+          "Korean translation. Empty string when the utterance is already Korean.",
+      },
+    },
+    required: ["start", "end", "speaker", "language", "text", "translation"],
+    propertyOrdering: [
+      "start",
+      "end",
+      "speaker",
+      "language",
+      "text",
+      "translation",
+    ],
+  },
+};
+
+/** "MM:SS" or "HH:MM:SS" → seconds. Returns null on anything unparseable. */
+function clipTimeToSeconds(ts: string): number | null {
+  const parts = ts.trim().split(":").map((p) => parseInt(p, 10));
+  if (parts.some((p) => Number.isNaN(p))) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
 
 function buildSTTPrompt(chunk: any): string {
   // Build character list
@@ -43,29 +98,33 @@ Characters speaking foreign language: ${chars.join(", ")}
   ${contextSnippet}
 
 ## Instructions
-For each utterance in this clip, provide:
-- Approximate timestamp within this clip (MM:SS)
-- Speaker (if identifiable)
-- Language
-- Verbatim transcription
-- If not Korean, provide Korean translation
+Return one entry per utterance, in chronological order, covering EVERYTHING —
+crew chatter, narration and retakes included. Do not skip any speech.
 
-Transcribe EVERYTHING — do not skip any speech. Format as a structured list.`;
+- \`start\` / \`end\` are clip-relative MM:SS. \`end\` is where that speech actually
+  stops — do NOT stretch it to the next speaker's start.
+- Split at natural speech boundaries. A single entry should be one continuous
+  utterance, not a whole conversation merged together.
+- \`language\` is what was actually spoken, not what the script expects.
+- \`translation\` is Korean; leave it as an empty string for Korean utterances.`;
 }
 
 for (let i = 0; i < plan.chunks.length; i++) {
   const chunk = plan.chunks[i];
-  const outFile = path.join(outDir, `${chunk.chunk_id}.txt`);
+  const outFile = path.join(outDir, `${chunk.chunk_id}.json`);
 
-  // Skip if already done — check for actual transcript content after the header
+  // Skip if already done — check for actual utterances, not just a valid file
   if (fs.existsSync(outFile)) {
-    const existing = fs.readFileSync(outFile, "utf-8");
-    const afterHeader = existing.split("---\n")[1]?.trim();
-    if (afterHeader && afterHeader.length > 50) {
-      console.error(
-        `[${i + 1}/${plan.chunks.length}] ${chunk.chunk_id} — already done, skipping`,
-      );
-      continue;
+    try {
+      const existing = JSON.parse(fs.readFileSync(outFile, "utf-8"));
+      if (Array.isArray(existing.utterances) && existing.utterances.length > 0) {
+        console.error(
+          `[${i + 1}/${plan.chunks.length}] ${chunk.chunk_id} — already done, skipping`,
+        );
+        continue;
+      }
+    } catch {
+      // fall through and retry
     }
     console.error(
       `[${i + 1}/${plan.chunks.length}] ${chunk.chunk_id} — incomplete result, retrying...`,
@@ -77,7 +136,7 @@ for (let i = 0; i < plan.chunks.length; i++) {
   );
 
   const prompt = buildSTTPrompt(chunk);
-  let text = "";
+  let utterances: any[] = [];
   let retries = 0;
 
   while (retries <= 2) {
@@ -102,9 +161,24 @@ for (let i = 0; i < plan.chunks.length; i++) {
           temperature: 0.2,
           maxOutputTokens: MAX_OUTPUT_TOKENS,
           thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+          responseMimeType: "application/json",
+          responseSchema: RESPONSE_SCHEMA,
         },
       });
-      text = response.text?.trim() || "";
+      // Surface truncation explicitly — otherwise this shows up as an opaque
+      // "JSON Parse error" and retries burn calls on an identical failure.
+      const finishReason = response.candidates?.[0]?.finishReason;
+      if (finishReason && finishReason !== "STOP") {
+        const u = response.usageMetadata ?? ({} as any);
+        throw new Error(
+          `finishReason=${finishReason} (thoughts=${u.thoughtsTokenCount ?? "?"}, output=${u.candidatesTokenCount ?? "?"}, cap=${MAX_OUTPUT_TOKENS}) — raise MAX_OUTPUT_TOKENS or lower thinkingLevel`,
+        );
+      }
+      const raw = response.text?.trim() || "";
+      if (!raw) throw new Error("empty response");
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error("response was not an array");
+      utterances = parsed;
       break;
     } catch (err: any) {
       retries++;
@@ -120,19 +194,53 @@ for (let i = 0; i < plan.chunks.length; i++) {
     }
   }
 
-  if (text) {
-    // Prepend metadata header
-    const header = [
-      `CHUNK: ${chunk.chunk_id}`,
-      `SCENE: ${chunk.scene}`,
-      `AUDIO_OFFSET: ${chunk.audio_start}s (${formatTimestamp(chunk.audio_start)}) from original`,
-      `MARKER_RANGE: ${formatTimestamp(chunk.start_sec)} - ${formatTimestamp(chunk.end_sec)}`,
-      `MARKERS: ${chunk.marker_indices.join(", ")}`,
-      `---`,
-    ].join("\n");
+  if (utterances.length) {
+    // Resolve clip-relative MM:SS into absolute seconds here, so the mapper
+    // never has to do timestamp arithmetic by hand.
+    let dropped = 0;
+    const enriched = utterances.flatMap((u: any) => {
+      const startSec = clipTimeToSeconds(u.start);
+      const endSec = clipTimeToSeconds(u.end);
+      if (startSec === null) {
+        dropped++;
+        return [];
+      }
+      const safeEnd = endSec !== null && endSec >= startSec ? endSec : startSec;
+      return [
+        {
+          ...u,
+          start_sec: startSec,
+          end_sec: safeEnd,
+          abs_start: chunk.audio_start + startSec,
+          abs_end: chunk.audio_start + safeEnd,
+          duration: safeEnd - startSec,
+        },
+      ];
+    });
 
-    fs.writeFileSync(outFile, header + "\n" + text, "utf-8");
-    console.error(`  ✓ Saved ${outFile} (${text.length} chars)`);
+    const speechSec = enriched.reduce(
+      (acc: number, u: any) => acc + u.duration,
+      0,
+    );
+    const foreignSec = enriched
+      .filter((u: any) => u.language && u.language.trim() !== "한국어")
+      .reduce((acc: number, u: any) => acc + u.duration, 0);
+
+    const out = {
+      chunk_id: chunk.chunk_id,
+      scene: chunk.scene,
+      audio_start: chunk.audio_start,
+      marker_range: [chunk.start_sec, chunk.end_sec],
+      markers: chunk.marker_indices,
+      speech_sec: speechSec,
+      foreign_speech_sec: foreignSec,
+      utterances: enriched,
+    };
+
+    fs.writeFileSync(outFile, JSON.stringify(out, null, 2), "utf-8");
+    console.error(
+      `  ✓ Saved ${outFile} (${enriched.length} utterances, ${formatTimestamp(foreignSec)} foreign speech${dropped ? `, ${dropped} dropped` : ""})`,
+    );
   } else {
     console.error(`  ✗ No output for ${chunk.chunk_id}`);
   }
