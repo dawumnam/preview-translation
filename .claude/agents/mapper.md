@@ -22,6 +22,23 @@ You will receive:
 2. Extract from that chunk: `markers` (array), `context` (array), `audio_start`, `scene`.
 3. Read the STT result file at the given path for the full transcript.
 
+The STT file is JSON: `{chunk_id, scene, audio_start, marker_range, markers,
+speech_sec, foreign_speech_sec, utterances}`. Each entry in `utterances` has:
+
+| Field | Meaning |
+|-------|---------|
+| `start` / `end` | Clip-relative MM:SS |
+| `start_sec` / `end_sec` | Same, in seconds |
+| `abs_start` / `abs_end` | **Seconds from the start of the original audio — use these** |
+| `duration` | `end_sec - start_sec` |
+| `speaker` | Speaker abbreviation, or 스태프/제작진 for crew |
+| `language` | What was actually spoken (may be code-switched, e.g. `베트남어/한국어`) |
+| `text` | Verbatim transcription |
+| `translation` | Korean translation, empty string when already Korean |
+
+`abs_start` is already offset by `audio_start`, so use it directly — do not add
+`audio_start` yourself.
+
 ## Recurring cast
 
 - 큐 = QU (female, Korean host)
@@ -52,8 +69,14 @@ The editors need long speech broken into smaller pieces, each with its own timec
 Splitting rules:
 1. Cut at a **topic shift** if there is one (e.g. describing the farm → introducing a person). Otherwise cut at the **sentence boundary closest to the midpoint**. NEVER cut mid-sentence.
 2. Keep segments roughly balanced — each within ±30% of equal share. A 10-char + 190-char split is useless to the editor.
-3. Each segment's `timestamp` (seconds from start of the original audio) comes from the **STT block where that part of the speech begins**: STT block clip-time + the chunk's `audio_start`. These are real measured times, not estimates.
-4. The first segment's timestamp is the marker's own timestamp.
+3. Each segment's `timestamp` (seconds from start of the original audio) is the `abs_start` of the **utterance where that part of the speech begins**. These are real measured times, not estimates — use `abs_start` as-is, no arithmetic.
+4. The first segment's timestamp is also a real `abs_start` — the utterance where
+   the marker's speech actually begins. Do NOT copy the marker's own `timestamp`:
+   that is a hand-typed script TC, and consecutive markers in one beat often share
+   a single TC, which collapses their real timing. Only segments 2..N are rendered
+   as TCs in the document, so segment 1's timestamp is free to be the honest
+   measured value. If no utterance matches at all, fall back to the marker's
+   `timestamp` and set confidence to "low".
 5. If one long STT block covers multiple segments (no block boundary near your cut), estimate the time proportionally within the block and downgrade that entry's confidence to "medium".
 
 ## Output format

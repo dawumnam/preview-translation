@@ -6,8 +6,12 @@ import { formatTimestamp } from "./parser";
 
 const MODEL = "gemini-3.8-flash";
 // Caps runaway output (see pre-flight checklist), but must also cover thinking
-// tokens, which count against this budget — HIGH thinking alone can take ~7k.
-const MAX_OUTPUT_TOKENS = 32768;
+// tokens, which count against this budget. HIGH thinking has been measured at
+// 14k-30k on a single 5-minute chunk, and a dense chunk needs ~10k more for the
+// transcript itself, so anything under ~48k risks truncating mid-JSON.
+// HIGH is worth the tokens: on the densest chunk it found ~10% more foreign
+// speech than MEDIUM/LOW, and speech it misses becomes a marker with no match.
+const MAX_OUTPUT_TOKENS = 65536;
 
 const uploadedPath = process.argv[2];
 if (!uploadedPath) {

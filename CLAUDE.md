@@ -32,7 +32,7 @@ All intermediate outputs are written next to the input HWPX file (not CWD). Path
               → <hwpx-dir>/chunks/ + <hwpx-dir>/chunks_uploaded.json
 
 3. STT       bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json
-              → <hwpx-dir>/stt_results/*.txt
+              → <hwpx-dir>/stt_results/*.json
 
 4. MAP       Orchestrator spawns one mapper agent per chunk in parallel
               → <hwpx-dir>/translations/<chunk_id>.json (per chunk)
@@ -52,17 +52,41 @@ Step 4 supports resume: chunks with existing `translations/<chunk_id>.json` are 
 The orchestrator handles this directly (no skill needed):
 1. Greps `chunks_plan.json` for `"chunk_id"` values
 2. Spawns one `mapper` agent per chunk **in parallel** (subagent_type: "mapper"), passing file paths + chunk_id
-3. Each agent reads its own chunk data from `chunks_plan.json` and `stt_results/<chunk_id>.txt`
+3. Each agent reads its own chunk data from `chunks_plan.json` and `stt_results/<chunk_id>.json`
 4. Each agent matches speech to markers and writes `translations/<chunk_id>.json`
 5. After all agents complete, orchestrator runs `bun src/merge_translations.ts` to merge + validate
 
 The `mapper` agent (`.claude/agents/mapper.md`) processes a single chunk:
 - Reads its own data files (chunks_plan.json + stt_results) — orchestrator does not pre-read them
-- Reads markers + STT transcript together — no explicit timestamp arithmetic needed
+- Reads markers + STT transcript together — no timestamp arithmetic needed (`abs_start` is pre-resolved)
 - Uses STT-provided Korean translations as a starting point
 - Improves translations using surrounding Korean dialogue context
-- Splits long translations into TC segments (≤80 chars = 1, 80–200 = 2, >200 = 3; cut at topic/sentence boundaries; segment timestamps from STT block start times)
+- Splits long translations into TC segments (≤80 chars = 1, 80–200 = 2, >200 = 3; cut at topic/sentence boundaries; segment timestamps are the `abs_start` of the matching utterance — including segment 1, never the marker's hand-typed TC)
 - Writes `[{markerIndex, language, charName, timestamp, scene, segments: [{timestamp, text}], confidence}]` to `translations/<chunk_id>.json`
+
+### Step 3 detail — STT output
+
+`stt_chunks.ts` uses a Gemini `responseSchema`, so every chunk comes back in the
+same shape rather than whatever markdown the model felt like emitting:
+
+```json
+{
+  "chunk_id": "03", "scene": "...", "audio_start": 1355,
+  "marker_range": [1415, 1415], "markers": [38, 39, 40, 41],
+  "speech_sec": 35, "foreign_speech_sec": 7,
+  "utterances": [
+    { "start": "01:01", "end": "01:03", "start_sec": 61, "end_sec": 63,
+      "abs_start": 1416, "abs_end": 1418, "duration": 2,
+      "speaker": "큐", "language": "베트남어",
+      "text": "À, chào chị...", "translation": "아, 안녕하세요..." }
+  ]
+}
+```
+
+`abs_start` / `abs_end` are already offset by `audio_start`, so mappers use them
+directly. `foreign_speech_sec` sums every utterance whose `language` is not
+plain `한국어`, which makes "how much speech actually needs translating"
+a measured number rather than an estimate from script TCs.
 
 ## Key files
 
@@ -103,9 +127,9 @@ Long translations are split by mapper agents into multiple segments, each with i
 Before running the pipeline, verify these known pitfalls first:
 
 1. **Mapper agents MUST use `mode: "bypassPermissions"`** — without this, all agents silently hang waiting for Write approval that never comes. Do NOT spawn mapper agents without this mode.
-2. **STT model has `maxOutputTokens` set** — check `stt_chunks.ts` has a token cap (currently 16384). Without it, Gemini can hallucinate 100k+ char outputs that corrupt the pipeline.
+2. **STT `maxOutputTokens` must cover thinking tokens** — the cap (currently 65536) bounds runaway output, but `thinkingLevel: HIGH` counts against it and has been measured at 14k–30k on one chunk. Too low a cap truncates the JSON mid-string; the run reports `finishReason=MAX_TOKENS` with the token split.
 3. **Multiple files need separate work directories** — never run two HWPX files in the same directory or intermediate files collide.
-4. **STT results sanity check** — after STT completes, scan for anomalous output sizes. Delete and re-run any that are suspiciously large (>30k chars) or tiny (<100 chars for chunks with multiple markers).
+4. **STT results sanity check** — after STT completes, check each `stt_results/*.json` for a plausible `utterances` count and `foreign_speech_sec`. Delete and re-run any chunk with zero/near-zero foreign speech that has markers expecting it.
 
 ## Multi-file parallel processing
 
