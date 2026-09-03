@@ -4,7 +4,7 @@ import { ThinkingLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini";
 import { formatTimestamp } from "./parser";
 
-const MODEL = "gemini-3.6-flash";
+const MODEL = "gemini-3.8-flash";
 const MAX_OUTPUT_TOKENS = 16384;
 
 const uploadedPath = process.argv[2];

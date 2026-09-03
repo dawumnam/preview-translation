@@ -18,7 +18,7 @@ export interface Translation {
   confidence: "high" | "medium" | "low";
 }
 
-const MODEL = "gemini-3.6-flash";
+const MODEL = "gemini-3.8-flash";
 
 function buildPrompt(scene: SceneChunk): string {
   const markerList = scene.markers

@@ -7,7 +7,7 @@ const { values } = parseArgs({
   options: {
     uri: { type: "string" },
     file: { type: "string" },
-    model: { type: "string", default: "gemini-3.6-flash" },
+    model: { type: "string", default: "gemini-3.8-flash" },
   },
   strict: true,
 });
