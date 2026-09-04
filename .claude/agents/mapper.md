@@ -71,18 +71,22 @@ Splitting rules:
    turn, so this is a sentence-boundary cut. NEVER cut mid-sentence. Prefer a
    topic shift if one falls near the cut.
 2. Use as few segments as the cap allows and keep them roughly balanced. A 30s
-   span is two segments of ~15s, not 20s + 10s. A segment's audio runs from its
-   own `timestamp` to the next segment's `timestamp` (or to `speech_end` for
-   the last one).
-3. Each segment's `timestamp` (seconds from start of the original audio) is the `abs_start` of the **utterance where that part of the speech begins**. These are real measured times, not estimates — use `abs_start` as-is, no arithmetic.
-4. The first segment's timestamp is also a real `abs_start` — the utterance where
+   span is two segments of ~15s, not 20s + 10s.
+3. Coverage is measured on the **timeline**: a segment runs from its own
+   `timestamp` to the next segment's `timestamp` (or to `speech_end` for the
+   last one). When two speakers interleave — 큐 and 검여 trading lines under
+   two markers — the other speaker's turns still count toward this segment's
+   span. Do NOT measure only this speaker's own lines; the editor sees one TC
+   block per segment and needs the next TC within 20s of video.
+4. Each segment's `timestamp` (seconds from start of the original audio) is the `abs_start` of the **utterance where that part of the speech begins**. These are real measured times, not estimates — use `abs_start` as-is, no arithmetic.
+5. The first segment's timestamp is also a real `abs_start` — the utterance where
    the marker's speech actually begins. Do NOT copy the marker's own `timestamp`:
    that is a hand-typed script TC, and consecutive markers in one beat often share
    a single TC, which collapses their real timing. Only segments 2..N are rendered
    as TCs in the document, so segment 1's timestamp is free to be the honest
    measured value. If no utterance matches at all, fall back to the marker's
    `timestamp` and set confidence to "low".
-5. If a single utterance is itself longer than 20s (no utterance boundary to
+6. If a single utterance is itself longer than 20s (no utterance boundary to
    cut at), cut it at a sentence boundary, estimate that segment's timestamp
    proportionally within the utterance, and downgrade the entry's confidence
    to "medium".
