@@ -229,18 +229,21 @@ for (let i = 0; i < plan.chunks.length; i++) {
           end_sec: safeEnd,
           abs_start: chunk.audio_start + startSec,
           abs_end: chunk.audio_start + safeEnd,
-          duration: safeEnd - startSec,
+          duration: Math.round((safeEnd - startSec) * 10) / 10,
         },
       ];
     });
 
-    const speechSec = enriched.reduce(
-      (acc: number, u: any) => acc + u.duration,
-      0,
+    // Sums of tenths accumulate float noise; keep the stored totals to 0.1s.
+    const tenth = (x: number) => Math.round(x * 10) / 10;
+    const speechSec = tenth(
+      enriched.reduce((acc: number, u: any) => acc + u.duration, 0),
     );
-    const foreignSec = enriched
-      .filter((u: any) => u.language && u.language.trim() !== "한국어")
-      .reduce((acc: number, u: any) => acc + u.duration, 0);
+    const foreignSec = tenth(
+      enriched
+        .filter((u: any) => u.language && u.language.trim() !== "한국어")
+        .reduce((acc: number, u: any) => acc + u.duration, 0),
+    );
 
     const out = {
       chunk_id: chunk.chunk_id,
