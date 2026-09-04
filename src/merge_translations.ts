@@ -97,6 +97,28 @@ for (const t of all) {
   }
 }
 
+// Validate speech spans — the audio each translation was written from, which
+// is what gets billed. Missing spans are tolerated (legacy runs) but reported,
+// because speech_duration.ts cannot count those markers.
+let noSpan = 0;
+for (const t of all) {
+  const hasSpan =
+    typeof t.speech_start === "number" && typeof t.speech_end === "number";
+  if (!hasSpan) {
+    noSpan++;
+  } else if (t.speech_end! < t.speech_start!) {
+    console.error(
+      `Marker ${t.markerIndex}: speech_end ${t.speech_end} before speech_start ${t.speech_start}`,
+    );
+    structuralErrors++;
+  }
+}
+if (noSpan > 0) {
+  console.warn(
+    `Warning: ${noSpan} of ${all.length} entries have no speech_start/speech_end — speech_duration.ts will report them as unmeasured`,
+  );
+}
+
 if (structuralErrors > 0) {
   console.error(`\n${structuralErrors} structural error(s). Merge aborted.`);
   process.exit(1);

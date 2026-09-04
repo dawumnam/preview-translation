@@ -90,24 +90,21 @@ a measured number rather than an estimate from script TCs.
 
 ### Billing accuracy
 
-**What counts.** `speech_duration.ts` measures foreign *dialogue* time: each
-target-language utterance's full span (pauses between words are inside it),
-overlapping speech counted once, plus true pauses of ≤2s between consecutive
-foreign lines — a pause counts only if nothing else was said in it. True pauses
-cluster at 1s and vanish past 2s, so the threshold is not a sensitive knob. All
-chunks are pooled onto one episode timeline first, because adjacent chunks'
-buffers overlap by up to 120s and would otherwise double-count (20s on 0825).
+**What counts: the audio each translation was written from.** The mapper
+records `speech_start` / `speech_end` per marker — the absolute span of the
+STT lines it drew on. `speech_duration.ts` bills the union of those spans:
+the audio that had to be transcribed to produce the end result, counted once
+where markers share an exchange. Nothing is inferred. If a translation was
+written from it, it counts; a discarded take or chatter the script never
+marked produces no translation and is not counted. Read from
+`translations.json`, so it exists only after step 4.
 
-**Which speech is billable is a contract question, not a measurement one.**
-The raw footage holds far more foreign speech than the script marks: discarded
-takes, lead-in chatter, a Q&A shot twice with only the second take marked. The
-tool always reports three rules and `--rule` picks which becomes `billable`:
-
-| rule | counts | 0825 |
-|------|--------|------|
-| A | everything foreign in the scanned audio | 10:37 |
-| B (default) | A minus speech before each chunk's first marker — where NG takes live | 8:39 |
-| C | only blocks a script marker lands in (strict; splits long exchanges) | 7:01 |
+For reference the tool also prints foreign-dialogue time straight from the
+STT transcripts under three attribution rules (A everything foreign in the
+scanned audio, B minus speech before each chunk's first marker, C only blocks
+a marker lands in — 10:37 / 8:39 / 7:01 on 0825, whole-second passes). Those
+are estimates of the same thing from the other direction; the mapper's spans
+are the figure to invoice.
 
 **How precise.** Timestamps are model output, not acoustic measurement. Ask
 for tenths of a second: with whole seconds the model floors starts and ceils

@@ -91,14 +91,29 @@ Return a JSON array (and nothing else outside the JSON) of translation entries. 
     "charName": "검여",
     "timestamp": 304,
     "scene": "의상실",
+    "speech_start": 304.2,
+    "speech_end": 347.9,
     "segments": [
-      { "timestamp": 304, "text": "First part of the translation, cut at a sentence boundary." },
-      { "timestamp": 331, "text": "Second part, starting where that speech begins in the audio." }
+      { "timestamp": 304.2, "text": "First part of the translation, cut at a sentence boundary." },
+      { "timestamp": 331.0, "text": "Second part, starting where that speech begins in the audio." }
     ],
     "confidence": "high"
   }
 ]
 ```
+
+`speech_start` / `speech_end` are the **audio span this translation was written
+from**: the `abs_start` of the first utterance you drew on and the `abs_end` of
+the last. This is what the translation is billed on — the audio that had to be
+transcribed to write it — so be exact about it:
+
+- Include every utterance whose content went into the translation, and nothing
+  else. If the exchange runs over a Korean aside and continues, the span runs
+  over the aside too (you transcribed through it).
+- Two markers that share one exchange (e.g. 큐 and 검여 at the same script TC)
+  each get their own span; overlapping spans are counted once downstream.
+- If no utterance matches and you fell back to the marker's own `timestamp`,
+  set both to that timestamp (a zero-length span) and confidence "low".
 
 ## Step 3: Write output
 
@@ -109,6 +124,7 @@ Return a JSON array (and nothing else outside the JSON) of translation entries. 
 ## Important rules
 
 - Every marker MUST have exactly one translation entry — no skips, no extras
+- Every entry MUST carry `speech_start` and `speech_end` (absolute seconds)
 - If the STT has no clear match for a marker, use context clues and set confidence to "low"
 - Korean translations should read naturally as TV subtitles — not word-for-word
 - Always write the output file before responding

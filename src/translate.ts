@@ -13,6 +13,8 @@ export interface Translation {
   charName: string;
   timestamp: number;
   scene: string;
+  speech_start?: number; // abs seconds: audio span this translation was written from
+  speech_end?: number; //   (billing basis — see speech_duration.ts)
   translation?: string; // legacy single-block format
   segments?: TranslationSegment[]; // split format: long speech broken at sentence/topic boundaries
   confidence: "high" | "medium" | "low";
