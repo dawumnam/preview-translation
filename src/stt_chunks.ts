@@ -14,8 +14,12 @@ const MODEL = "gemini-3.8-flash";
 const MAX_OUTPUT_TOKENS = 65536;
 
 const uploadedPath = process.argv[2];
+// Optional output dir name. Extra passes (stt_results_2, stt_results_3, ...)
+// exist so speech_duration.ts can average them: a single pass is ±4% on the
+// billable total, the mean of three is ±2%. Mapping still reads stt_results.
+const outDirName = process.argv[3] || "stt_results";
 if (!uploadedPath) {
-  console.error("Usage: bun src/stt_chunks.ts <chunks_uploaded.json>");
+  console.error("Usage: bun src/stt_chunks.ts <chunks_uploaded.json> [out-dir-name=stt_results]");
   process.exit(1);
 }
 
@@ -23,7 +27,7 @@ const plan = JSON.parse(fs.readFileSync(uploadedPath, "utf-8"));
 const baseDir = path.dirname(path.resolve(plan.hwpx_path));
 
 // Create output directory
-const outDir = path.join(baseDir, "stt_results");
+const outDir = path.join(baseDir, outDirName);
 if (!fs.existsSync(outDir)) {
   fs.mkdirSync(outDir);
 }

@@ -88,6 +88,21 @@ directly. `foreign_speech_sec` sums every utterance whose `language` is not
 plain `한국어`, which makes "how much speech actually needs translating"
 a measured number rather than an estimate from script TCs.
 
+### Billing accuracy
+
+Gemini's timestamps are model output, not acoustic measurement, so the billable
+total moves between runs. Measured on one episode (3 full passes): a single pass
+lands within **±4%** of the mean, the mean of three within **±2%**. Against an
+ffmpeg `silencedetect` bound, Gemini's speech total was 0.72× the acoustic
+non-silence on every chunk, so it does not inflate durations; any residual
+error is under-counting. Nearly all the run-to-run spread came from chunks
+with a constant noise bed (running water, machinery), so a wide per-chunk
+range in the `speech_duration.ts` report means hard audio, not a bad run.
+
+For a billable figure, run `stt_chunks.ts` two extra times into `stt_results_2`
+and `stt_results_3`; `speech_duration.ts` averages every `stt_results*` dir it
+finds and reports the spread. Mapping (step 4) keeps reading `stt_results/`.
+
 ## Key files
 
 | File | Role |
@@ -150,7 +165,9 @@ Mapper agents must be spawned with `mode: "bypassPermissions"` to write translat
 bun src/plan_chunks.ts "<script>.hwpx" <audio>.mp3   # or .mp4
 bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json
-bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json   # optional: billable minutes → speech_duration.json
+bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_2   # billing only: two extra passes
+bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_3
+bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json                 # billable minutes → speech_duration.json
 # step 4: orchestrator spawns mapper agents → translations/<chunk_id>.json
 bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
 bun src/apply.ts "<script>.hwpx" <hwpx-dir>/translations.json
