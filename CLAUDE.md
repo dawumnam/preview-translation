@@ -103,6 +103,7 @@ a measured number rather than an estimate from script TCs.
 | `src/extract_chunks.ts` | CLI: ffmpeg extract + Gemini upload (supports .mp3 and .mp4 input) |
 | `src/stt_chunks.ts` | CLI: batch STT on uploaded chunks |
 | `src/merge_translations.ts` | CLI: merge per-chunk translations → translations.json |
+| `src/speech_duration.ts` | CLI: sum measured foreign-speech minutes from stt_results (billing) |
 | `.claude/agents/mapper.md` | Mapper agent — translates one chunk's markers |
 
 ## Confidence
@@ -149,6 +150,7 @@ Mapper agents must be spawned with `mode: "bypassPermissions"` to write translat
 bun src/plan_chunks.ts "<script>.hwpx" <audio>.mp3   # or .mp4
 bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json
+bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json   # optional: billable minutes → speech_duration.json
 # step 4: orchestrator spawns mapper agents → translations/<chunk_id>.json
 bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
 bun src/apply.ts "<script>.hwpx" <hwpx-dir>/translations.json
