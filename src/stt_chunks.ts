@@ -258,7 +258,7 @@ for (let i = 0; i < plan.chunks.length; i++) {
 
     fs.writeFileSync(outFile, JSON.stringify(out, null, 2), "utf-8");
     console.error(
-      `  ✓ Saved ${outFile} (${enriched.length} utterances, ${formatTimestamp(foreignSec)} foreign speech${dropped ? `, ${dropped} dropped` : ""})`,
+      `  ✓ Saved ${outFile} (${enriched.length} utterances, ${formatTimestamp(Math.round(foreignSec))} foreign speech${dropped ? `, ${dropped} dropped` : ""})`,
     );
   } else {
     console.error(`  ✗ No output for ${chunk.chunk_id}`);
