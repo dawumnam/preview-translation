@@ -35,9 +35,19 @@ speech_sec, foreign_speech_sec, utterances}`. Each entry in `utterances` has:
 | `language` | What was actually spoken (may be code-switched, e.g. `베트남어/한국어`) |
 | `text` | Verbatim transcription |
 | `translation` | Korean translation, empty string when already Korean |
+| `heard_by` / `of_passes` | How many independent STT passes heard this line |
+| `speakers_heard` | Speaker labels across passes (diarization flips 갈남/파여) |
 
 `abs_start` is already offset by `audio_start`, so use it directly — do not add
 `audio_start` yourself.
+
+The transcript is the **union of several STT passes**. A local's short reply
+under running water or under the host's Korean is routinely heard by only one
+pass in five — it is still real speech, and it is usually exactly what a
+`@@` marker on that speaker is pointing at. Do not dismiss a line because
+`heard_by` is 1; use the script's marker order and `charName` to place it.
+Where `speakers_heard` disagrees, trust the script's `charName` sequence over
+the STT's speaker label.
 
 ## Recurring cast
 

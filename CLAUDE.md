@@ -31,8 +31,11 @@ All intermediate outputs are written next to the input HWPX file (not CWD). Path
 2. EXTRACT   bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json
               → <hwpx-dir>/chunks/ + <hwpx-dir>/chunks_uploaded.json
 
-3. STT       bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json
-              → <hwpx-dir>/stt_results/*.json
+3. STT       bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json [stt_results_N]
+              → <hwpx-dir>/stt_results/*.json   (run 3–5 passes: stt_results_2, _3, ...)
+
+3b. MERGE STT bun src/merge_stt.ts <hwpx-dir>/chunks_plan.json
+              → <hwpx-dir>/stt_results_merged/*.json   (union of all passes)
 
 4. MAP       Orchestrator spawns one mapper agent per chunk in parallel
               → <hwpx-dir>/translations/<chunk_id>.json (per chunk)
@@ -52,7 +55,7 @@ Step 4 supports resume: chunks with existing `translations/<chunk_id>.json` are 
 The orchestrator handles this directly (no skill needed):
 1. Greps `chunks_plan.json` for `"chunk_id"` values
 2. Spawns one `mapper` agent per chunk **in parallel** (subagent_type: "mapper"), passing file paths + chunk_id
-3. Each agent reads its own chunk data from `chunks_plan.json` and `stt_results/<chunk_id>.json`
+3. Each agent reads its own chunk data from `chunks_plan.json` and `stt_results_merged/<chunk_id>.json` — never a single pass: quiet lines under noise are heard by one pass in five, and on 0825 six markers' speech was missed by the pass the mappers first read
 4. Each agent matches speech to markers and writes `translations/<chunk_id>.json`
 5. After all agents complete, orchestrator runs `bun src/merge_translations.ts` to merge + validate
 
@@ -104,8 +107,11 @@ STT transcripts under three attribution rules (A everything foreign in the
 scanned audio, B minus speech before each chunk's first marker, C only blocks
 a marker lands in — 10:17 / 8:24 / 7:02 on 0825, three tenths passes). Those
 are estimates of the same thing from the other direction; the mapper's spans
-are the figure to invoice. On 0825 the spans came to 6:38 for 105 markers, 6
-of which had no audible speech and billed zero.
+are the figure to invoice. On 0825 a single-pass run gave 6:38 for 105
+markers with 6 "silent" markers billing zero — and those six turned out to be
+quiet lines under water noise that the one pass missed and four of the other
+five heard. Hence `merge_stt.ts`: mappers and the billing check both read the
+union of passes.
 
 **How precise.** Timestamps are model output, not acoustic measurement. Ask
 for tenths of a second: with whole seconds the model floors starts and ceils
@@ -135,7 +141,8 @@ marked is invisible to every rule.
 | `src/apply.ts` | CLI: apply translations.json → translated HWPX |
 | `src/plan_chunks.ts` | CLI: parse HWPX + compute audio chunks |
 | `src/extract_chunks.ts` | CLI: ffmpeg extract + Gemini upload (supports .mp3 and .mp4 input) |
-| `src/stt_chunks.ts` | CLI: batch STT on uploaded chunks |
+| `src/stt_chunks.ts` | CLI: batch STT on uploaded chunks (one pass per run) |
+| `src/merge_stt.ts` | CLI: union of all STT passes → stt_results_merged/ (mapper + billing input) |
 | `src/merge_translations.ts` | CLI: merge per-chunk translations → translations.json |
 | `src/speech_duration.ts` | CLI: sum measured foreign-speech minutes from stt_results (billing) |
 | `.claude/agents/mapper.md` | Mapper agent — translates one chunk's markers |
@@ -186,7 +193,10 @@ bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_2   # billing only: two extra passes
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_3
-bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json [--rule A|B|C]  # billable minutes → speech_duration.json
+bun src/merge_stt.ts <hwpx-dir>/chunks_plan.json                       # union of passes → stt_results_merged/
+# step 4: mappers read stt_results_merged/<chunk_id>.json
+bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
+bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json                 # billable minutes → speech_duration.json
 # step 4: orchestrator spawns mapper agents → translations/<chunk_id>.json
 bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
 bun src/apply.ts "<script>.hwpx" <hwpx-dir>/translations.json

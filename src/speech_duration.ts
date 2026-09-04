@@ -87,14 +87,16 @@ interface MarkerSpan { markerIndex: number; charName: string; chunk: string; spe
 interface Billable { sec: number; markers: number; measured: number; zero: number; unsupported: number[]; perChunk: Map<string, number>; perMarker: MarkerSpan[]; atEdge?: number[] }
 let billable: Billable | null = null;
 
-// The foreign utterances the mapper worked from (the pass it reads: PREFIX/).
-// A span only bills if at least one of them falls inside it. This is the
-// user's definition made mechanical — nothing transcribed, nothing billed —
-// and it stops a mapper from inventing a span for a marker it found no
-// speech for, which one did.
-const supportDir = path.join(baseDir, PREFIX);
+// Every foreign utterance any STT pass heard. A span only bills if at least
+// one of them falls inside it — nothing transcribed, nothing billed. It must
+// be the union of ALL passes, not the one the mapper read: quiet lines under
+// noise are caught on some passes and missed on others, and on 0825 six
+// markers' speech was missed by pass 1 and heard by four or five of the rest.
+const dirRe = new RegExp(`^${PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(_\\d+)?$`);
+const runDirs = fs.readdirSync(baseDir).filter((n) => dirRe.test(n)).sort((a, b) => a.length - b.length || a.localeCompare(b));
 const support: Span[] = [];
-if (fs.existsSync(supportDir)) {
+for (const dir of runDirs) {
+  const supportDir = path.join(baseDir, dir);
   for (const f of fs.readdirSync(supportDir).filter((n) => n.endsWith(".json"))) {
     for (const u of JSON.parse(fs.readFileSync(path.join(supportDir, f), "utf-8")).utterances ?? []) {
       const lang = String(u.language ?? "").trim();
@@ -187,8 +189,6 @@ function summarizeRun(dirName: string): RunRef {
   const blocks = dialogueBlocks(pooled, isTarget);
   return { dir: dirName, utterances: pooled.length, missing, A: applyRule(blocks, "A"), B: applyRule(blocks, "B"), C: applyRule(blocks, "C"), all_speech: allSum, by_language: byLang };
 }
-const dirRe = new RegExp(`^${PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(_\\d+)?$`);
-const runDirs = fs.readdirSync(baseDir).filter((n) => dirRe.test(n)).sort((a, b) => a.length - b.length || a.localeCompare(b));
 const runs = runDirs.map(summarizeRun);
 for (const r of runs) if (r.missing.length) console.error(`WARNING: ${r.dir} has no result for chunks ${r.missing.join(", ")}`);
 const refMeans = { A: mean(runs.map((r) => r.A)), B: mean(runs.map((r) => r.B)), C: mean(runs.map((r) => r.C)) };
