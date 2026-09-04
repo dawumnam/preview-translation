@@ -101,16 +101,27 @@ for (const chunk of plan.chunks) {
   for (const u of utts) {
     const kor = isKorean(u.language);
     const dur = Math.max(0.1, u.abs_end - u.abs_start);
+    // Two locals answering back-to-back overlap in time across passes, and
+    // utterances arrive in time order, so a line can meet the neighbour's
+    // cluster before its own exists. A same-speaker join needs 40% overlap
+    // (a speaker's consecutive lines never overlap, so any real overlap
+    // between passes is the same line with different timing); a
+    // cross-speaker join (a genuine diarization flip — same line, same
+    // times) needs 75%. Among candidates prefer the same speaker, then
+    // the larger overlap.
     let best: Cluster | null = null;
-    let bestOv = 0;
+    let bestScore = 0;
     for (const c of clusters) {
       if (c.korean !== kor) continue;
       if (c.members.some((m) => m.pass === u.pass)) continue; // one per pass per cluster
       const ov = Math.min(c.end, u.abs_end) - Math.max(c.start, u.abs_start);
       const shorter = Math.min(dur, Math.max(0.1, c.end - c.start));
-      if (ov / shorter >= 0.5 && ov > bestOv) {
+      const sameSpeaker = c.members.some((m) => m.speaker === u.speaker);
+      if (ov / shorter < (sameSpeaker ? 0.4 : 0.75)) continue;
+      const score = ov + (sameSpeaker ? 100 : 0);
+      if (score > bestScore) {
         best = c;
-        bestOv = ov;
+        bestScore = score;
       }
     }
     if (best) {
