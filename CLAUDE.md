@@ -128,6 +128,15 @@ spread. Mapping (step 4) keeps reading `stt_results/`.
 transcribed — 29 of 91 minutes on 0825. Foreign speech the scriptwriter never
 marked is invisible to every rule.
 
+**Widening a chunk.** When `speech_duration.ts` reports a span touching a
+chunk's audio edge, the fixed 60s buffer cut the exchange off. To redo just
+that chunk: set a larger `audio_end` for it in both `chunks_plan.json` and
+`chunks_uploaded.json`, drop its `uri`/`mimeType` from the latter, delete
+`chunks/<id>.mp3`, `stt_results*/<id>.json` and `stt_results_merged/<id>.json`,
+then run `extract_chunks.ts` on `chunks_uploaded.json` (only that chunk is
+re-extracted and re-uploaded), the STT passes (each skips chunks that already
+have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–6.
+
 ## Key files
 
 | File | Role |
