@@ -90,7 +90,17 @@ a measured number rather than an estimate from script TCs.
 
 ### Billing accuracy
 
-Gemini's timestamps are model output, not acoustic measurement, so the billable
+**What counts.** Billable time is foreign *dialogue*, not vocal-sound time:
+each target-language utterance's full span (pauses between words are inside
+it), overlapping speech counted once, plus true pauses of ≤2s between
+consecutive foreign lines. A pause only counts if nothing else was said in
+it — a Korean line in the gap makes it Korean dialogue, not a beat in the
+foreign exchange. On the 0825 episode true pauses cluster at 1s and drop off
+sharply, so the 2s threshold is not a sensitive knob (2s→5s moves the total
+by ~1%). This is ~4% above the plain sum of utterance durations, which
+`speech_duration.ts` still prints as a reference.
+
+**How precise.** Gemini's timestamps are model output, not acoustic measurement, so the billable
 total moves between runs. Measured on one episode (3 full passes): a single pass
 lands within **±4%** of the mean, the mean of three within **±2%**. Against an
 ffmpeg `silencedetect` bound, Gemini's speech total was 0.72× the acoustic
