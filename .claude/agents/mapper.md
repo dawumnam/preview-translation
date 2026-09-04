@@ -144,6 +144,11 @@ transcribed to write it — so be exact about it:
   beat without an `@@` marker (e.g. `1725 흰남과 인사하는 큐` with no marker: the
   writer saw the farewell and chose not to mark it). Do not fold such speech
   into an earlier marker to "cover" it; leave it untranslated.
+- "No other marker until X" is never a reason to extend a span to X. A marker
+  with a `hint` like `너무 깊어 괜찮다 괜찮다 오케이 오케이` is that one reaction
+  (~8s), not every exclamation over the next minute of wading. Most spans are
+  a few seconds; a span over 30s should be one continuous exchange you can
+  point to, not scattered lines stitched together.
 - If no utterance matches and you fell back to the marker's own `timestamp`,
   set both to that timestamp (a zero-length span) and confidence "low".
 
