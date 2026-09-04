@@ -102,9 +102,10 @@ marked produces no translation and is not counted. Read from
 For reference the tool also prints foreign-dialogue time straight from the
 STT transcripts under three attribution rules (A everything foreign in the
 scanned audio, B minus speech before each chunk's first marker, C only blocks
-a marker lands in — 10:37 / 8:39 / 7:01 on 0825, whole-second passes). Those
+a marker lands in — 10:17 / 8:24 / 7:02 on 0825, three tenths passes). Those
 are estimates of the same thing from the other direction; the mapper's spans
-are the figure to invoice.
+are the figure to invoice. On 0825 the spans came to 6:38 for 105 markers, 6
+of which had no audible speech and billed zero.
 
 **How precise.** Timestamps are model output, not acoustic measurement. Ask
 for tenths of a second: with whole seconds the model floors starts and ceils

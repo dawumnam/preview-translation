@@ -84,7 +84,7 @@ function unionLength(spans: Span[]): number {
 // ---------------------------------------------------------------------------
 const translationsPath = path.join(baseDir, "translations.json");
 interface MarkerSpan { markerIndex: number; charName: string; chunk: string; speech_start: number; speech_end: number; sec: number }
-interface Billable { sec: number; markers: number; measured: number; zero: number; perChunk: Map<string, number>; perMarker: MarkerSpan[] }
+interface Billable { sec: number; markers: number; measured: number; zero: number; perChunk: Map<string, number>; perMarker: MarkerSpan[]; atEdge?: number[] }
 let billable: Billable | null = null;
 
 if (fs.existsSync(translationsPath)) {
@@ -186,6 +186,16 @@ if (billable) {
     console.error(`  WARNING: only ${billable.measured} of ${billable.markers} entries carry speech_start/speech_end — the rest are NOT counted. Re-run step 4 with the current mapper.`);
   }
   if (billable.zero) console.error(`  ${billable.zero} marker(s) have a zero-length span (no STT match; confidence should be "low") — worth a look`);
+  // A span that reaches the chunk's audio boundary was probably cut off by the
+  // fixed 60s buffer: the exchange may continue past what was transcribed.
+  const atEdge = billable.perMarker.filter((m) => {
+    const c = chunks.find((c) => c.chunk_id === m.chunk);
+    return c && m.sec > 0 && (m.speech_end >= c.audio_end - 1 || m.speech_start <= c.audio_start + 1);
+  });
+  if (atEdge.length) {
+    console.error(`  ${atEdge.length} span(s) touch a chunk's audio edge — the exchange may run past the buffer, so the translation and this figure may be truncated. Widen that chunk's audio window and re-run steps 2-4: ${atEdge.map((m) => `#${m.markerIndex} (${m.chunk})`).join(", ")}`);
+  }
+  billable.atEdge = atEdge.map((m) => m.markerIndex);
 } else {
   console.error(`\nNo translations.json in ${baseDir} — step 4 (MAP) has not run, so there is no billable figure yet. Reference figures only.`);
 }
@@ -209,6 +219,7 @@ const out = {
   markers: billable?.markers ?? plan.total_markers,
   markers_measured: billable?.measured ?? 0,
   markers_zero_span: billable?.zero ?? 0,
+  markers_at_chunk_edge: billable?.atEdge ?? [],
   per_chunk: billable ? chunks.map((c) => ({ chunk_id: c.chunk_id, scene: c.scene, markers: c.marker_indices.length, billable_sec: Math.round((billable!.perChunk.get(c.chunk_id) ?? 0) * 10) / 10 })) : [],
   per_marker: billable?.perMarker ?? [],
   reference: {
