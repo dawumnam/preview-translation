@@ -84,20 +84,42 @@ function unionLength(spans: Span[]): number {
 // ---------------------------------------------------------------------------
 const translationsPath = path.join(baseDir, "translations.json");
 interface MarkerSpan { markerIndex: number; charName: string; chunk: string; speech_start: number; speech_end: number; sec: number }
-interface Billable { sec: number; markers: number; measured: number; zero: number; perChunk: Map<string, number>; perMarker: MarkerSpan[]; atEdge?: number[] }
+interface Billable { sec: number; markers: number; measured: number; zero: number; unsupported: number[]; perChunk: Map<string, number>; perMarker: MarkerSpan[]; atEdge?: number[] }
 let billable: Billable | null = null;
+
+// The foreign utterances the mapper worked from (the pass it reads: PREFIX/).
+// A span only bills if at least one of them falls inside it. This is the
+// user's definition made mechanical — nothing transcribed, nothing billed —
+// and it stops a mapper from inventing a span for a marker it found no
+// speech for, which one did.
+const supportDir = path.join(baseDir, PREFIX);
+const support: Span[] = [];
+if (fs.existsSync(supportDir)) {
+  for (const f of fs.readdirSync(supportDir).filter((n) => n.endsWith(".json"))) {
+    for (const u of JSON.parse(fs.readFileSync(path.join(supportDir, f), "utf-8")).utterances ?? []) {
+      const lang = String(u.language ?? "").trim();
+      const isT = targets.length === 0 ? lang !== "한국어" : targets.some((t) => lang.includes(t));
+      if (isT && Number.isFinite(u.abs_start) && Number.isFinite(u.abs_end)) support.push([u.abs_start, u.abs_end]);
+    }
+  }
+}
 
 if (fs.existsSync(translationsPath)) {
   const all: Translation[] = JSON.parse(fs.readFileSync(translationsPath, "utf-8"));
   const spans: Span[] = [];
   const byChunk = new Map<string, Span[]>();
   const perMarker: MarkerSpan[] = [];
+  const unsupported: number[] = [];
   let measured = 0;
   let zero = 0;
   for (const t of all) {
     if (typeof t.speech_start !== "number" || typeof t.speech_end !== "number") continue;
     measured++;
-    const span: Span = [t.speech_start, Math.max(t.speech_start, t.speech_end)];
+    let span: Span = [t.speech_start, Math.max(t.speech_start, t.speech_end)];
+    if (span[1] > span[0] && support.length && !support.some(([a, b]) => a < span[1] && b > span[0])) {
+      unsupported.push(t.markerIndex);
+      span = [span[0], span[0]];
+    }
     if (span[1] - span[0] === 0) zero++;
     spans.push(span);
     const cid = markerChunk.get(t.markerIndex) ?? "?";
@@ -107,7 +129,7 @@ if (fs.existsSync(translationsPath)) {
   }
   const perChunk = new Map<string, number>();
   for (const [cid, s] of byChunk) perChunk.set(cid, unionLength(s));
-  billable = { sec: unionLength(spans), markers: all.length, measured, zero, perChunk, perMarker };
+  billable = { sec: unionLength(spans), markers: all.length, measured, zero, unsupported, perChunk, perMarker };
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +207,9 @@ if (billable) {
   if (billable.measured < billable.markers) {
     console.error(`  WARNING: only ${billable.measured} of ${billable.markers} entries carry speech_start/speech_end — the rest are NOT counted. Re-run step 4 with the current mapper.`);
   }
+  if (billable.unsupported.length) {
+    console.error(`  ${billable.unsupported.length} span(s) contain no transcribed ${target} utterance and were billed as zero: #${billable.unsupported.join(", #")} — the mapper reported a span for speech the STT never heard`);
+  }
   if (billable.zero) console.error(`  ${billable.zero} marker(s) have a zero-length span (no STT match; confidence should be "low") — worth a look`);
   // A span that reaches the chunk's audio boundary was probably cut off by the
   // fixed 60s buffer: the exchange may continue past what was transcribed.
@@ -219,6 +244,7 @@ const out = {
   markers: billable?.markers ?? plan.total_markers,
   markers_measured: billable?.measured ?? 0,
   markers_zero_span: billable?.zero ?? 0,
+  markers_unsupported_span: billable?.unsupported ?? [],
   markers_at_chunk_edge: billable?.atEdge ?? [],
   per_chunk: billable ? chunks.map((c) => ({ chunk_id: c.chunk_id, scene: c.scene, markers: c.marker_indices.length, billable_sec: Math.round((billable!.perChunk.get(c.chunk_id) ?? 0) * 10) / 10 })) : [],
   per_marker: billable?.perMarker ?? [],

@@ -73,6 +73,14 @@ for (const t of all) {
   if (Array.isArray(t.segments) && t.segments.length > 0) {
     if (t.segments.length > 1) multiSegmentCount++;
 
+    // Segment 1's timestamp is the measured start of the marker's speech.
+    // Mappers keep writing the script TC here despite instructions, so set
+    // it from speech_start rather than rely on them. Not rendered in the
+    // document (only segments 2..N get a TC), but it keeps the data honest.
+    if (typeof t.speech_start === "number" && typeof t.segments[0].timestamp === "number") {
+      t.segments[0].timestamp = t.speech_start;
+    }
+
     let prevTs = -1;
     for (const [i, seg] of t.segments.entries()) {
       if (typeof seg.timestamp !== "number" || !seg.text?.trim()) {
