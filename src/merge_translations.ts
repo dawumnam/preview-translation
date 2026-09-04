@@ -51,10 +51,14 @@ if (gaps.length > 0) {
   process.exit(1);
 }
 
-// Validate segments
-const MAX_SEGMENT_CHARS = 220;
+// Validate segments. Editors want each TC block to cover at most 20s of
+// audio; a segment runs from its timestamp to the next segment's (or to the
+// marker's speech_end for the last one). Overruns are warnings, not errors:
+// a single 22s sentence cannot be cut without splitting it mid-sentence.
+const MAX_SEGMENT_SEC = 20;
 let multiSegmentCount = 0;
 let structuralErrors = 0;
+let overlong = 0;
 
 for (const t of all) {
   const hasText =
@@ -84,17 +88,34 @@ for (const t of all) {
       } else {
         prevTs = seg.timestamp;
       }
-      if (seg.text && seg.text.length > MAX_SEGMENT_CHARS) {
-        console.warn(
-          `Warning: marker ${t.markerIndex} segment ${i} is ${seg.text.length} chars (>${MAX_SEGMENT_CHARS}) — consider splitting further`,
-        );
+    }
+
+    if (typeof t.speech_end === "number") {
+      for (const [i, seg] of t.segments.entries()) {
+        const next = t.segments[i + 1];
+        const end = next ? next.timestamp : t.speech_end;
+        const dur = end - seg.timestamp;
+        if (dur > MAX_SEGMENT_SEC) {
+          overlong++;
+          console.warn(
+            `Warning: marker ${t.markerIndex} segment ${i} covers ${dur.toFixed(1)}s of audio (>${MAX_SEGMENT_SEC}s) — should be split at a sentence boundary`,
+          );
+        }
       }
     }
-  } else if (t.translation && t.translation.length > MAX_SEGMENT_CHARS) {
+  } else if (
+    typeof t.speech_start === "number" &&
+    typeof t.speech_end === "number" &&
+    t.speech_end - t.speech_start > MAX_SEGMENT_SEC
+  ) {
+    overlong++;
     console.warn(
-      `Warning: marker ${t.markerIndex} single translation is ${t.translation.length} chars (>${MAX_SEGMENT_CHARS}) — should be split into segments`,
+      `Warning: marker ${t.markerIndex} single translation covers ${(t.speech_end - t.speech_start).toFixed(1)}s of audio (>${MAX_SEGMENT_SEC}s) — should be split into segments`,
     );
   }
+}
+if (overlong > 0) {
+  console.warn(`Warning: ${overlong} segment(s) exceed ${MAX_SEGMENT_SEC}s`);
 }
 
 // Validate speech spans — the audio each translation was written from, which

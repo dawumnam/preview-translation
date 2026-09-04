@@ -61,7 +61,7 @@ The `mapper` agent (`.claude/agents/mapper.md`) processes a single chunk:
 - Reads markers + STT transcript together — no timestamp arithmetic needed (`abs_start` is pre-resolved)
 - Uses STT-provided Korean translations as a starting point
 - Improves translations using surrounding Korean dialogue context
-- Splits long translations into TC segments (≤80 chars = 1, 80–200 = 2, >200 = 3; cut at topic/sentence boundaries; segment timestamps are the `abs_start` of the matching utterance — including segment 1, never the marker's hand-typed TC)
+- Splits long translations into TC segments so no segment covers more than 20s of audio (cut at utterance/sentence boundaries, as few and as balanced as the cap allows; segment timestamps are the `abs_start` of the matching utterance — including segment 1, never the marker's hand-typed TC)
 - Writes `[{markerIndex, language, charName, timestamp, scene, segments: [{timestamp, text}], confidence}]` to `translations/<chunk_id>.json`
 
 ### Step 3 detail — STT output
@@ -146,7 +146,7 @@ Mapper agents return `"high"`, `"medium"`, or `"low"` confidence per translation
 
 ## TC segments
 
-Long translations are split by mapper agents into multiple segments, each with its own timecode (editor request: long blocks are hard to edit). In the final HWPX, segment 1 replaces the marker text as before; segments 2..N are inserted as new paragraphs formatted `TC<tab>charName<tab>@@(lang) text` (TC in script format: MMSS, or HMMSS past one hour). `replace.ts` handles the paragraph cloning; `merge_translations.ts` validates segment structure (ascending timestamps, warns >220 chars). Legacy single-`translation` entries still work.
+Long translations are split by mapper agents into multiple segments, each with its own timecode (editor request: long blocks are hard to edit). In the final HWPX, segment 1 replaces the marker text as before; segments 2..N are inserted as new paragraphs formatted `TC<tab>charName<tab>@@(lang) text` (TC in script format: MMSS, or HMMSS past one hour). `replace.ts` handles the paragraph cloning; `merge_translations.ts` validates segment structure (ascending timestamps, warns when a segment covers more than 20s of audio — a segment runs from its timestamp to the next one's, or to the marker's `speech_end`). Legacy single-`translation` entries still work.
 
 ## Conventions
 

@@ -60,15 +60,20 @@ Other character abbreviations (검여, 검남, 수남, etc.) are episode-specifi
 
 ## Step 3: Split long translations into TC segments
 
-The editors need long speech broken into smaller pieces, each with its own timecode. For each marker's translation:
+The editors need long speech broken into pieces of at most **20 seconds of
+audio**, each with its own timecode. The rule is about time, not text length:
 
-- **≤80 chars** → one segment
-- **80–200 chars** → split into 2 segments
-- **>200 chars** → split into 3 segments
+- speech span (`speech_end − speech_start`) **≤ 20s** → one segment
+- **> 20s** → split so that **no segment covers more than 20s** of audio
 
 Splitting rules:
-1. Cut at a **topic shift** if there is one (e.g. describing the farm → introducing a person). Otherwise cut at the **sentence boundary closest to the midpoint**. NEVER cut mid-sentence.
-2. Keep segments roughly balanced — each within ±30% of equal share. A 10-char + 190-char split is useless to the editor.
+1. Cut at **utterance boundaries** — each STT utterance is a sentence or a
+   turn, so this is a sentence-boundary cut. NEVER cut mid-sentence. Prefer a
+   topic shift if one falls near the cut.
+2. Use as few segments as the cap allows and keep them roughly balanced. A 30s
+   span is two segments of ~15s, not 20s + 10s. A segment's audio runs from its
+   own `timestamp` to the next segment's `timestamp` (or to `speech_end` for
+   the last one).
 3. Each segment's `timestamp` (seconds from start of the original audio) is the `abs_start` of the **utterance where that part of the speech begins**. These are real measured times, not estimates — use `abs_start` as-is, no arithmetic.
 4. The first segment's timestamp is also a real `abs_start` — the utterance where
    the marker's speech actually begins. Do NOT copy the marker's own `timestamp`:
@@ -77,7 +82,10 @@ Splitting rules:
    as TCs in the document, so segment 1's timestamp is free to be the honest
    measured value. If no utterance matches at all, fall back to the marker's
    `timestamp` and set confidence to "low".
-5. If one long STT block covers multiple segments (no block boundary near your cut), estimate the time proportionally within the block and downgrade that entry's confidence to "medium".
+5. If a single utterance is itself longer than 20s (no utterance boundary to
+   cut at), cut it at a sentence boundary, estimate that segment's timestamp
+   proportionally within the utterance, and downgrade the entry's confidence
+   to "medium".
 
 ## Output format
 
