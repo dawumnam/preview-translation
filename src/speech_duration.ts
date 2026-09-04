@@ -2,37 +2,53 @@ import fs from "fs";
 import path from "path";
 import { formatTimestamp } from "./parser";
 
-// Measures billable foreign-dialogue minutes from stt_results*/ and writes
+// Measures foreign-dialogue minutes from stt_results*/ and writes
 // speech_duration.json next to the plan.
 //
-// Billable = foreign DIALOGUE time, not just vocal-sound time:
-//   - the span of each utterance in the target language (pauses between words
-//     are inside the span, so they count)
-//   - overlapping speech counted once (two people talking at once is one
-//     stretch of program time)
-//   - plus true pauses of <= PAUSE_SEC between consecutive foreign lines. A
-//     pause is "true" only if nothing else was said in it — a Korean line in
-//     the gap makes it Korean dialogue, not a beat in the foreign exchange.
-// Measured on one episode, true pauses cluster at 1s and drop off sharply, so
-// the threshold moves the total by well under 1% between 2s and 5s.
+// Usage: bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json [--rule A|B|C] [--prefix stt_results]
 //
-// Also reported, for reference:
-//   speech    — plain sum of target-language utterance durations (no pause
-//               credit, overlap double-counted). ~4% under billable.
-//   nonKorean — everything not plain 한국어, same dialogue rule. Sweeps up stray
-//               영어/독일어 labels, usually noise in a single-language episode.
+// All utterances from every chunk are pooled onto one episode timeline before
+// anything is summed, so audio that two chunks' buffers both cover is counted
+// once (adjacent chunks overlap by up to 120s; on the 0825 episode that was
+// worth 20s of double-counting per pass).
 //
-// If several STT passes exist (stt_results, stt_results_2, ...) every total is
-// the mean across passes and the spread is reported. A single pass lands within
-// ±4% of the mean, the mean of three within ±2%. The unstable chunks are the
-// ones with a constant noise bed (running water, machinery), so a wide
-// per-chunk range points at hard audio, not a bad run.
+// Dialogue time, not vocal-sound time: each target-language utterance's full
+// span, overlapping speech counted once, plus true pauses of <= PAUSE_SEC
+// between consecutive foreign lines. A pause counts only if nothing else was
+// said in it — a Korean line in the gap makes it Korean dialogue. True pauses
+// cluster at 1s and vanish past 2s, so the threshold is not a sensitive knob.
+//
+// Three attribution rules are always reported, because the raw footage holds
+// far more foreign speech than the script marks for translation, and which of
+// it is billable is a contract question:
+//   A  everything in the scanned audio — includes discarded takes and lead-in
+//      chatter the script never marks
+//   B  excludes speech before each chunk's first marker. That window is where
+//      NG takes live: on 0825 it held the first take of a haggle before the PD
+//      called a redo, and a Q&A that was re-shot 30s later and marked there.
+//   C  only blocks a marker lands in ([start-20s, end]). Strictest; penalises
+//      a long exchange that a Korean aside splits into several blocks.
+// On 0825, across three passes: A 10:37, B 8:39, C 7:01. --rule picks which
+// one is written as `billable`; default B.
+//
+// If several passes exist (stt_results, stt_results_2, ...) every figure is
+// the mean across passes and the spread is reported. Whole-second passes
+// landed within ±4% of their mean; tenths-of-a-second passes are far tighter.
 
 const PAUSE_SEC = 2;
+const LEAD_IN_GRACE_SEC = 5; // markers are hand-typed and may trail the real start
+const STRICT_LEAD_SEC = 20;
 
-const planPath = process.argv[2];
-if (!planPath) {
-  console.error("Usage: bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json");
+const args = process.argv.slice(2);
+const planPath = args.find((a) => !a.startsWith("--"));
+const flag = (name: string, dflt: string) => {
+  const i = args.indexOf(`--${name}`);
+  return i >= 0 && args[i + 1] ? args[i + 1] : dflt;
+};
+const RULE = flag("rule", "B").toUpperCase() as "A" | "B" | "C";
+const PREFIX = flag("prefix", "stt_results");
+if (!planPath || !["A", "B", "C"].includes(RULE)) {
+  console.error("Usage: bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json [--rule A|B|C] [--prefix stt_results]");
   process.exit(1);
 }
 
@@ -46,146 +62,162 @@ const LANG_NAME: Record<string, string> = {
 
 const plan = JSON.parse(fs.readFileSync(planPath, "utf-8"));
 const baseDir = path.dirname(path.resolve(planPath));
+const chunks: any[] = [...plan.chunks].sort((a, b) => a.audio_start - b.audio_start);
 
+const dirRe = new RegExp(`^${PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(_\\d+)?$`);
 const runDirs = fs
   .readdirSync(baseDir)
-  .filter((n) => /^stt_results(_\d+)?$/.test(n))
+  .filter((n) => dirRe.test(n))
   .sort((a, b) => a.length - b.length || a.localeCompare(b));
 if (runDirs.length === 0) {
-  console.error(`No stt_results*/ directory under ${baseDir}`);
+  console.error(`No ${PREFIX}*/ directory under ${baseDir}`);
   process.exit(1);
 }
 
 // Target language: whatever the markers say. Warn if an episode mixes codes.
-const codes = [
-  ...new Set(
-    plan.chunks.flatMap((c: any) => c.markers.map((m: any) => m.language)),
-  ),
-] as string[];
+const codes = [...new Set(chunks.flatMap((c) => c.markers.map((m: any) => m.language)))] as string[];
 const targets = codes.map((c) => LANG_NAME[c]).filter(Boolean);
 if (targets.length === 0) {
-  console.error(`No known language code among markers (${codes.join(", ")}); billable = nonKorean`);
+  console.error(`No known language code among markers (${codes.join(", ")}); target = anything non-Korean`);
 } else if (targets.length > 1) {
-  console.error(`Markers use several languages (${codes.join(", ")}); billable counts any of them`);
+  console.error(`Markers use several languages (${codes.join(", ")}); target = any of them`);
 }
 const target = targets.length ? targets.join("/") : "(non-Korean)";
 
+const markerTs: number[] = [...new Set(chunks.flatMap((c) => c.markers.map((m: any) => m.timestamp)))].sort((a, b) => a - b) as number[];
+// Lead-in windows: from the chunk's audio start up to just before its first marker.
+const leadIn: [number, number][] = chunks.map((c) => [
+  c.audio_start,
+  Math.min(...c.markers.map((m: any) => m.timestamp)) - LEAD_IN_GRACE_SEC,
+]);
+
 interface Utt {
-  start_sec: number;
-  end_sec: number;
+  abs_start: number;
+  abs_end: number;
   duration: number;
   language: string;
 }
+type Block = [number, number];
 
 const isNonKorean = (u: Utt) => u.language !== "한국어";
 const isTarget = (u: Utt) =>
   targets.length === 0 ? isNonKorean(u) : targets.some((t) => u.language.includes(t));
 
-/**
- * Dialogue seconds for the utterances selected by `pick`: union of their spans,
- * bridging gaps of <= PAUSE_SEC when no other utterance falls in the gap.
- */
-function dialogueSec(all: Utt[], pick: (u: Utt) => boolean): number {
-  const sel = all.filter(pick);
-  if (sel.length === 0) return 0;
+/** Dialogue blocks (absolute seconds) for utterances selected by `pick`. */
+function dialogueBlocks(all: Utt[], pick: (u: Utt) => boolean): Block[] {
+  const sel = all.filter(pick).sort((a, b) => a.abs_start - b.abs_start || a.abs_end - b.abs_end);
+  if (sel.length === 0) return [];
   const others = all.filter((u) => !pick(u));
   const gapIsEmpty = (a: Utt, b: Utt) =>
-    !others.some((o) => o.start_sec < b.start_sec && o.end_sec > a.end_sec);
-
-  let total = 0;
-  let bs = sel[0].start_sec;
-  let be = sel[0].end_sec;
+    !others.some((o) => o.abs_start < b.abs_start && o.abs_end > a.abs_end);
+  const blocks: Block[] = [];
+  let bs = sel[0].abs_start;
+  let be = sel[0].abs_end;
   let prev = sel[0];
   for (const u of sel.slice(1)) {
-    const gap = u.start_sec - be;
+    const gap = u.abs_start - be;
     if (gap <= 0 || (gap <= PAUSE_SEC && gapIsEmpty(prev, u))) {
-      be = Math.max(be, u.end_sec);
+      be = Math.max(be, u.abs_end);
     } else {
-      total += be - bs;
-      bs = u.start_sec;
-      be = u.end_sec;
+      blocks.push([bs, be]);
+      bs = u.abs_start;
+      be = u.abs_end;
     }
     prev = u;
   }
-  return total + (be - bs);
+  blocks.push([bs, be]);
+  return blocks;
 }
 
-interface ChunkTotals {
-  chunk_id: string;
-  utterances: number;
-  billable_sec: number; // target dialogue
-  target_speech_sec: number; // plain sum, reference
-  non_korean_sec: number; // broad dialogue
-  speech_sec: number; // all languages, plain sum
+const overlap = (s: number, e: number, ws: number, we: number) => Math.max(0, Math.min(e, we) - Math.max(s, ws));
+const leadInPart = ([s, e]: Block) => leadIn.reduce((acc, [ws, we]) => acc + overlap(s, e, ws, we), 0);
+const hasMarker = ([s, e]: Block) => markerTs.some((m) => s - STRICT_LEAD_SEC <= m && m <= e);
+
+function applyRule(blocks: Block[], rule: "A" | "B" | "C"): number {
+  let total = 0;
+  for (const b of blocks) {
+    const len = b[1] - b[0];
+    if (rule === "A") total += len;
+    else if (rule === "B") total += len - leadInPart(b);
+    else if (hasMarker(b)) total += len;
+  }
+  return total;
 }
+
+/** Which chunk a block belongs to, for the per-chunk table only. */
+function chunkOf([s]: Block): string {
+  const c = chunks.find((c) => c.audio_start <= s && s <= c.audio_end);
+  return c ? c.chunk_id : "?";
+}
+
 interface RunTotals {
   dir: string;
-  billable_sec: number;
-  target_speech_sec: number;
-  non_korean_sec: number;
-  all_speech_sec: number;
   utterances: number;
   missing: string[];
+  A: number;
+  B: number;
+  C: number;
+  non_korean: number;
+  target_speech_sum: number;
+  all_speech_sum: number;
   by_language: Map<string, number>;
-  chunks: ChunkTotals[];
+  per_chunk: Map<string, number>;
 }
 
 function summarizeRun(dirName: string): RunTotals {
   const dir = path.join(baseDir, dirName);
-  const run: RunTotals = {
-    dir: dirName,
-    billable_sec: 0,
-    target_speech_sec: 0,
-    non_korean_sec: 0,
-    all_speech_sec: 0,
-    utterances: 0,
-    missing: [],
-    by_language: new Map(),
-    chunks: [],
-  };
-  for (const chunk of plan.chunks) {
+  const pooled: Utt[] = [];
+  const missing: string[] = [];
+  const byLang = new Map<string, number>();
+  let targetSum = 0;
+  let allSum = 0;
+  for (const chunk of chunks) {
     const f = path.join(dir, `${chunk.chunk_id}.json`);
     if (!fs.existsSync(f)) {
-      run.missing.push(chunk.chunk_id);
+      missing.push(chunk.chunk_id);
       continue;
     }
     const d = JSON.parse(fs.readFileSync(f, "utf-8"));
-    const utts: Utt[] = (d.utterances ?? [])
-      .map((u: any) => ({
-        start_sec: Number(u.start_sec) || 0,
-        end_sec: Number(u.end_sec) || 0,
-        duration: Number(u.duration) || 0,
-        language: String(u.language ?? "").trim(),
-      }))
-      .sort((a: Utt, b: Utt) => a.start_sec - b.start_sec || a.end_sec - b.end_sec);
-
-    const ct: ChunkTotals = {
-      chunk_id: chunk.chunk_id,
-      utterances: utts.length,
-      billable_sec: dialogueSec(utts, isTarget),
-      target_speech_sec: 0,
-      non_korean_sec: dialogueSec(utts, isNonKorean),
-      speech_sec: 0,
-    };
-    for (const u of utts) {
-      ct.speech_sec += u.duration;
-      if (isTarget(u)) ct.target_speech_sec += u.duration;
-      run.by_language.set(u.language, (run.by_language.get(u.language) ?? 0) + u.duration);
+    for (const raw of d.utterances ?? []) {
+      const u: Utt = {
+        abs_start: Number(raw.abs_start),
+        abs_end: Number(raw.abs_end),
+        duration: Number(raw.duration) || 0,
+        language: String(raw.language ?? "").trim(),
+      };
+      if (!Number.isFinite(u.abs_start) || !Number.isFinite(u.abs_end)) continue;
+      pooled.push(u);
+      allSum += u.duration;
+      if (isTarget(u)) targetSum += u.duration;
+      byLang.set(u.language, (byLang.get(u.language) ?? 0) + u.duration);
     }
-    run.chunks.push(ct);
-    run.utterances += ct.utterances;
-    run.all_speech_sec += ct.speech_sec;
-    run.target_speech_sec += ct.target_speech_sec;
-    run.non_korean_sec += ct.non_korean_sec;
-    run.billable_sec += ct.billable_sec;
   }
-  return run;
+  const blocks = dialogueBlocks(pooled, isTarget);
+  const perChunk = new Map<string, number>();
+  for (const b of blocks) {
+    const len = RULE === "A" ? b[1] - b[0] : RULE === "B" ? b[1] - b[0] - leadInPart(b) : hasMarker(b) ? b[1] - b[0] : 0;
+    const id = chunkOf(b);
+    perChunk.set(id, (perChunk.get(id) ?? 0) + len);
+  }
+  return {
+    dir: dirName,
+    utterances: pooled.length,
+    missing,
+    A: applyRule(blocks, "A"),
+    B: applyRule(blocks, "B"),
+    C: applyRule(blocks, "C"),
+    non_korean: applyRule(dialogueBlocks(pooled, isNonKorean), RULE),
+    target_speech_sum: targetSum,
+    all_speech_sum: allSum,
+    by_language: byLang,
+    per_chunk: perChunk,
+  };
 }
 
 const runs = runDirs.map(summarizeRun);
 for (const r of runs) {
   if (r.missing.length) {
-    console.error(`WARNING: ${r.dir} has no result for chunks ${r.missing.join(", ")} — its total is incomplete`);
+    console.error(`WARNING: ${r.dir} has no result for chunks ${r.missing.join(", ")} — its totals are incomplete`);
   }
 }
 
@@ -195,103 +227,92 @@ const sd = (xs: number[]) => {
   const m = mean(xs);
   return Math.sqrt(xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1));
 };
-
-const billables = runs.map((r) => r.billable_sec);
+const n = runs.length;
+const ruleMeans = { A: mean(runs.map((r) => r.A)), B: mean(runs.map((r) => r.B)), C: mean(runs.map((r) => r.C)) };
+const billables = runs.map((r) => r[RULE]);
 const billableMean = mean(billables);
 const billableSd = sd(billables);
-const billableSe = billableSd / Math.sqrt(runs.length);
-const targetSpeechMean = mean(runs.map((r) => r.target_speech_sec));
-const nonKoreanMean = mean(runs.map((r) => r.non_korean_sec));
-const allSpeechMean = mean(runs.map((r) => r.all_speech_sec));
+const billableSe = billableSd / Math.sqrt(n);
 
-// Per-chunk mean and spread, to spot audio that transcribes unstably.
-const chunkRows = plan.chunks.map((chunk: any) => {
-  const per = runs
-    .map((r) => r.chunks.find((c) => c.chunk_id === chunk.chunk_id))
-    .filter(Boolean) as ChunkTotals[];
-  const b = per.map((c) => c.billable_sec);
+const chunkRows = chunks.map((c) => {
+  const per = runs.map((r) => r.per_chunk.get(c.chunk_id) ?? 0);
   return {
-    chunk_id: chunk.chunk_id,
-    scene: chunk.scene,
-    markers: chunk.marker_indices.length,
-    runs_present: per.length,
-    billable_mean_sec: b.length ? mean(b) : 0,
-    billable_range_sec: b.length ? Math.max(...b) - Math.min(...b) : 0,
-    utterances: per.map((c) => c.utterances),
+    chunk_id: c.chunk_id,
+    scene: c.scene,
+    markers: c.marker_indices.length,
+    billable_mean_sec: mean(per),
+    billable_range_sec: Math.max(...per) - Math.min(...per),
   };
 });
 
-// Language table averaged across runs.
 const langNames = new Set<string>();
 for (const r of runs) for (const k of r.by_language.keys()) langNames.add(k);
 const byLanguage: Record<string, number> = {};
-for (const lang of langNames) {
-  byLanguage[lang] = mean(runs.map((r) => r.by_language.get(lang) ?? 0));
-}
+for (const lang of langNames) byLanguage[lang] = mean(runs.map((r) => r.by_language.get(lang) ?? 0));
 
 // --- report ---
-const pad = (s: string | number, n: number) => String(s).padStart(n);
 const ts = (s: number) => formatTimestamp(Math.round(s));
-console.error(
-  `\n${"chunk".padEnd(9)}${pad("markers", 8)}${pad("billable", 10)}${pad("range", 7)}  utterances/run`,
-);
+const pad = (s: string | number, w: number) => String(s).padStart(w);
+const pct = (x: number) => ((100 * x) / billableMean).toFixed(1) + "%";
+
+console.error(`\n${"chunk".padEnd(9)}${pad("markers", 8)}${pad(`rule ${RULE}`, 9)}${pad("range", 7)}`);
 for (const c of chunkRows) {
-  console.error(
-    `${c.chunk_id.padEnd(9)}${pad(c.markers, 8)}${pad(ts(c.billable_mean_sec), 10)}${pad(c.billable_range_sec + "s", 7)}  ${c.utterances.join("/")}`,
-  );
+  console.error(`${c.chunk_id.padEnd(9)}${pad(c.markers, 8)}${pad(ts(c.billable_mean_sec), 9)}${pad(Math.round(c.billable_range_sec) + "s", 7)}`);
 }
 
-if (runs.length > 1) {
-  console.error(`\nper run:`);
-  for (const r of runs) {
-    console.error(`  ${r.dir.padEnd(16)} ${ts(r.billable_sec)}`);
-  }
+console.error(`\n${"pass".padEnd(18)}${pad("A: all", 8)}${pad("B: no lead-in", 15)}${pad("C: strict", 11)}${pad("utts", 6)}`);
+for (const r of runs) {
+  console.error(`${r.dir.padEnd(18)}${pad(ts(r.A), 8)}${pad(ts(r.B), 15)}${pad(ts(r.C), 11)}${pad(r.utterances, 6)}`);
+}
+if (n > 1) {
+  console.error(`${"MEAN".padEnd(18)}${pad(ts(ruleMeans.A), 8)}${pad(ts(ruleMeans.B), 15)}${pad(ts(ruleMeans.C), 11)}`);
 }
 
-console.error(`\nby language (plain sum, mean of ${runs.length} run${runs.length > 1 ? "s" : ""}):`);
+console.error(`\nby language (plain sum of utterance durations, mean of ${n} pass${n > 1 ? "es" : ""}):`);
 for (const [lang, sec] of Object.entries(byLanguage).sort((a, b) => b[1] - a[1])) {
   console.error(`  ${lang.padEnd(18)} ${ts(sec)}`);
 }
 
-const pct = (x: number) => ((100 * x) / billableMean).toFixed(1) + "%";
-console.error(
-  `\nBILLABLE — ${target} dialogue (utterances + true pauses ≤${PAUSE_SEC}s, overlap once): ${ts(billableMean)}  = ${(billableMean / 60).toFixed(2)} min`,
-);
-if (runs.length > 1) {
-  console.error(
-    `  ${runs.length} runs, sd ${Math.round(billableSd)}s (${pct(billableSd)}), standard error of the mean ${Math.round(billableSe)}s (${pct(billableSe)})`,
-  );
+const ruleDesc = {
+  A: "all foreign dialogue in scanned audio, discarded takes included",
+  B: "foreign dialogue excluding speech before each chunk's first marker (discarded takes / lead-in)",
+  C: "foreign dialogue in blocks a script marker lands in",
+}[RULE];
+console.error(`\nBILLABLE — rule ${RULE}, ${target}: ${ts(billableMean)}  = ${(billableMean / 60).toFixed(2)} min`);
+console.error(`  ${ruleDesc}`);
+console.error(`  dialogue = utterance spans + true pauses ≤${PAUSE_SEC}s, overlap once, chunks deduplicated`);
+if (n > 1) {
+  console.error(`  ${n} passes, sd ${Math.round(billableSd)}s (${pct(billableSd)}), standard error of the mean ${Math.round(billableSe)}s (${pct(billableSe)})`);
 } else {
-  console.error(
-    `  single run — expect ±4%. For ±2%, run stt_chunks.ts twice more into stt_results_2 and stt_results_3.`,
-  );
+  console.error(`  single pass. For a tighter figure run stt_chunks.ts twice more into ${PREFIX}_2 and ${PREFIX}_3.`);
 }
-console.error(`  reference: plain sum of ${target} utterances (no pause credit)  ${ts(targetSpeechMean)}`);
-console.error(`  reference: non-Korean dialogue (broad)                        ${ts(nonKoreanMean)}`);
-console.error(`  all speech in chunks, every language                          ${ts(allSpeechMean)}`);
+console.error(`  reference: plain sum of ${target} utterances (no pause credit, overlap double-counted)  ${ts(mean(runs.map((r) => r.target_speech_sum)))}`);
+console.error(`  reference: non-Korean dialogue under rule ${RULE} (broad)                            ${ts(mean(runs.map((r) => r.non_korean)))}`);
+console.error(`  all speech in scanned audio, every language                                       ${ts(mean(runs.map((r) => r.all_speech_sum)))}`);
 
 const out = {
   hwpx_path: plan.hwpx_path,
   target_language: target,
-  definition: `dialogue: union of ${target} utterance spans + true pauses <= ${PAUSE_SEC}s (no other speech in the gap); overlap counted once`,
+  rule: RULE,
+  definition: `rule ${RULE}: ${ruleDesc}; dialogue = union of ${target} utterance spans + true pauses <= ${PAUSE_SEC}s (no other speech in the gap), overlap once, chunks pooled onto one timeline`,
   pause_sec: PAUSE_SEC,
   billable_sec: Math.round(billableMean),
   billable_min: Math.round((billableMean / 60) * 100) / 100,
-  n_runs: runs.length,
+  n_passes: n,
   billable_sd_sec: Math.round(billableSd),
   billable_se_sec: Math.round(billableSe),
-  runs: runs.map((r) => ({
+  rules_mean_sec: { A: Math.round(ruleMeans.A), B: Math.round(ruleMeans.B), C: Math.round(ruleMeans.C) },
+  passes: runs.map((r) => ({
     dir: r.dir,
-    billable_sec: r.billable_sec,
-    target_speech_sec: r.target_speech_sec,
-    non_korean_sec: r.non_korean_sec,
-    all_speech_sec: r.all_speech_sec,
+    A_sec: Math.round(r.A),
+    B_sec: Math.round(r.B),
+    C_sec: Math.round(r.C),
+    non_korean_sec: Math.round(r.non_korean),
+    target_speech_sum_sec: Math.round(r.target_speech_sum),
+    all_speech_sum_sec: Math.round(r.all_speech_sum),
     utterances: r.utterances,
     missing_chunks: r.missing,
   })),
-  target_speech_sec: Math.round(targetSpeechMean),
-  non_korean_sec: Math.round(nonKoreanMean),
-  all_speech_sec: Math.round(allSpeechMean),
   markers: plan.total_markers,
   by_language: byLanguage,
   chunks: chunkRows,
@@ -301,10 +322,14 @@ fs.writeFileSync(outPath, JSON.stringify(out, null, 2));
 console.error(`\nWrote ${outPath}`);
 console.log(
   JSON.stringify({
+    rule: RULE,
     billable_min: out.billable_min,
     billable_sec: out.billable_sec,
-    n_runs: runs.length,
-    se_pct: runs.length > 1 ? Math.round((1000 * billableSe) / billableMean) / 10 : null,
+    A_min: Math.round((ruleMeans.A / 60) * 100) / 100,
+    B_min: Math.round((ruleMeans.B / 60) * 100) / 100,
+    C_min: Math.round((ruleMeans.C / 60) * 100) / 100,
+    n_passes: n,
+    se_pct: n > 1 ? Math.round((1000 * billableSe) / billableMean) / 10 : null,
     target,
   }),
 );

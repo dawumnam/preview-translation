@@ -41,14 +41,19 @@ const RESPONSE_SCHEMA = {
   items: {
     type: Type.OBJECT,
     properties: {
+      // Tenths matter: with whole seconds the model floors starts and ceils
+      // ends, inflating a dialogue block by ~1s. Measured on one clean chunk:
+      // 98s whole-second vs 90.9s / 91.0s tenths (two passes) vs 95.2s from
+      // acoustic snapping. Tenths are also far more repeatable run to run.
       start: {
         type: Type.STRING,
-        description: "Start of the utterance within this clip, MM:SS",
+        description:
+          "Start of the utterance within this clip as MM:SS.d with tenths of a second, e.g. 01:03.4",
       },
       end: {
         type: Type.STRING,
         description:
-          "End of the utterance within this clip, MM:SS. When the speech stops, not when the next speaker starts.",
+          "End of the utterance within this clip as MM:SS.d with tenths of a second. When the speech stops, not when the next speaker starts.",
       },
       speaker: {
         type: Type.STRING,
@@ -78,13 +83,15 @@ const RESPONSE_SCHEMA = {
   },
 };
 
-/** "MM:SS" or "HH:MM:SS" → seconds. Returns null on anything unparseable. */
+/** "MM:SS.d" (or MM:SS / HH:MM:SS.d) → seconds. Returns null on anything unparseable. */
 function clipTimeToSeconds(ts: string): number | null {
-  const parts = ts.trim().split(":").map((p) => parseInt(p, 10));
-  if (parts.some((p) => Number.isNaN(p))) return null;
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  return null;
+  const parts = ts.trim().split(":");
+  if (parts.length < 2 || parts.length > 3) return null;
+  const secs = parseFloat(parts[parts.length - 1]);
+  const mins = parseInt(parts[parts.length - 2], 10);
+  const hrs = parts.length === 3 ? parseInt(parts[0], 10) : 0;
+  if ([secs, mins, hrs].some(Number.isNaN)) return null;
+  return Math.round((hrs * 3600 + mins * 60 + secs) * 10) / 10;
 }
 
 function buildSTTPrompt(chunk: any): string {
@@ -109,8 +116,9 @@ Characters speaking foreign language: ${chars.join(", ")}
 Return one entry per utterance, in chronological order, covering EVERYTHING —
 crew chatter, narration and retakes included. Do not skip any speech.
 
-- \`start\` / \`end\` are clip-relative MM:SS. \`end\` is where that speech actually
-  stops — do NOT stretch it to the next speaker's start.
+- \`start\` / \`end\` are clip-relative MM:SS.d with tenths of a second. Be precise:
+  \`end\` is where that speech actually stops — do NOT stretch it to the next
+  speaker's start.
 - Split at natural speech boundaries. A single entry should be one continuous
   utterance, not a whole conversation merged together.
 - \`language\` is what was actually spoken, not what the script expects.

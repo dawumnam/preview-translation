@@ -75,8 +75,8 @@ same shape rather than whatever markdown the model felt like emitting:
   "marker_range": [1415, 1415], "markers": [38, 39, 40, 41],
   "speech_sec": 35, "foreign_speech_sec": 7,
   "utterances": [
-    { "start": "01:01", "end": "01:03", "start_sec": 61, "end_sec": 63,
-      "abs_start": 1416, "abs_end": 1418, "duration": 2,
+    { "start": "01:01.3", "end": "01:03.1", "start_sec": 61.3, "end_sec": 63.1,
+      "abs_start": 1416.3, "abs_end": 1418.1, "duration": 1.8,
       "speaker": "큐", "language": "베트남어",
       "text": "À, chào chị...", "translation": "아, 안녕하세요..." }
   ]
@@ -90,28 +90,39 @@ a measured number rather than an estimate from script TCs.
 
 ### Billing accuracy
 
-**What counts.** Billable time is foreign *dialogue*, not vocal-sound time:
-each target-language utterance's full span (pauses between words are inside
-it), overlapping speech counted once, plus true pauses of ≤2s between
-consecutive foreign lines. A pause only counts if nothing else was said in
-it — a Korean line in the gap makes it Korean dialogue, not a beat in the
-foreign exchange. On the 0825 episode true pauses cluster at 1s and drop off
-sharply, so the 2s threshold is not a sensitive knob (2s→5s moves the total
-by ~1%). This is ~4% above the plain sum of utterance durations, which
-`speech_duration.ts` still prints as a reference.
+**What counts.** `speech_duration.ts` measures foreign *dialogue* time: each
+target-language utterance's full span (pauses between words are inside it),
+overlapping speech counted once, plus true pauses of ≤2s between consecutive
+foreign lines — a pause counts only if nothing else was said in it. True pauses
+cluster at 1s and vanish past 2s, so the threshold is not a sensitive knob. All
+chunks are pooled onto one episode timeline first, because adjacent chunks'
+buffers overlap by up to 120s and would otherwise double-count (20s on 0825).
 
-**How precise.** Gemini's timestamps are model output, not acoustic measurement, so the billable
-total moves between runs. Measured on one episode (3 full passes): a single pass
-lands within **±4%** of the mean, the mean of three within **±2%**. Against an
-ffmpeg `silencedetect` bound, Gemini's speech total was 0.72× the acoustic
-non-silence on every chunk, so it does not inflate durations; any residual
-error is under-counting. Nearly all the run-to-run spread came from chunks
-with a constant noise bed (running water, machinery), so a wide per-chunk
-range in the `speech_duration.ts` report means hard audio, not a bad run.
+**Which speech is billable is a contract question, not a measurement one.**
+The raw footage holds far more foreign speech than the script marks: discarded
+takes, lead-in chatter, a Q&A shot twice with only the second take marked. The
+tool always reports three rules and `--rule` picks which becomes `billable`:
 
-For a billable figure, run `stt_chunks.ts` two extra times into `stt_results_2`
-and `stt_results_3`; `speech_duration.ts` averages every `stt_results*` dir it
-finds and reports the spread. Mapping (step 4) keeps reading `stt_results/`.
+| rule | counts | 0825 |
+|------|--------|------|
+| A | everything foreign in the scanned audio | 10:37 |
+| B (default) | A minus speech before each chunk's first marker — where NG takes live | 8:39 |
+| C | only blocks a script marker lands in (strict; splits long exchanges) | 7:01 |
+
+**How precise.** Timestamps are model output, not acoustic measurement. Ask
+for tenths of a second: with whole seconds the model floors starts and ceils
+ends, inflating each block by ~1s — on one clean chunk that was 98s vs 90.9s,
+and the tenths figure was repeatable to 0.1% across passes. Against an ffmpeg
+`silencedetect` bound Gemini never exceeds the acoustic non-silence, so it does
+not pad beyond that; snapping block edges to real sound/silence transitions
+moved the total −3%, consistent with the tenths result. For a billable figure
+run `stt_chunks.ts` two extra times into `stt_results_2` and `stt_results_3`;
+`speech_duration.ts` averages every `stt_results*` dir it finds and reports the
+spread. Mapping (step 4) keeps reading `stt_results/`.
+
+**What is not measured.** Only audio inside the marker chunks (±60s) is ever
+transcribed — 29 of 91 minutes on 0825. Foreign speech the scriptwriter never
+marked is invisible to every rule.
 
 ## Key files
 
@@ -177,7 +188,7 @@ bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_2   # billing only: two extra passes
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_3
-bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json                 # billable minutes → speech_duration.json
+bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json [--rule A|B|C]  # billable minutes → speech_duration.json
 # step 4: orchestrator spawns mapper agents → translations/<chunk_id>.json
 bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
 bun src/apply.ts "<script>.hwpx" <hwpx-dir>/translations.json
