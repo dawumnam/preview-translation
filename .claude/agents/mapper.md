@@ -102,6 +102,11 @@ Return a JSON array (and nothing else outside the JSON) of translation entries. 
 ]
 ```
 
+Every segment's `timestamp` — including the only segment of a short, unsplit
+translation — is the `abs_start` of the utterance where that text begins. It is
+never the marker's script `timestamp`; that value is hand-typed and shared
+across a whole beat. The splitting rules below do not change this.
+
 `speech_start` / `speech_end` are the **audio span this translation was written
 from**: the `abs_start` of the first utterance you drew on and the `abs_end` of
 the last. This is what the translation is billed on — the audio that had to be
