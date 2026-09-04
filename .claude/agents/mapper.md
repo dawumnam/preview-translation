@@ -129,6 +129,11 @@ transcribed to write it — so be exact about it:
   over the aside too (you transcribed through it).
 - Two markers that share one exchange (e.g. 큐 and 검여 at the same script TC)
   each get their own span; overlapping spans are counted once downstream.
+- A span ends where the marker's exchange ends. Foreign speech in a LATER beat
+  is not part of it — especially when the script's context lines describe that
+  beat without an `@@` marker (e.g. `1725 흰남과 인사하는 큐` with no marker: the
+  writer saw the farewell and chose not to mark it). Do not fold such speech
+  into an earlier marker to "cover" it; leave it untranslated.
 - If no utterance matches and you fell back to the marker's own `timestamp`,
   set both to that timestamp (a zero-length span) and confidence "low".
 

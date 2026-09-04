@@ -221,6 +221,12 @@ if (billable) {
     console.error(`  ${atEdge.length} span(s) touch a chunk's audio edge — the exchange may run past the buffer, so the translation and this figure may be truncated. Widen that chunk's audio window and re-run steps 2-4: ${atEdge.map((m) => `#${m.markerIndex} (${m.chunk})`).join(", ")}`);
   }
   billable.atEdge = atEdge.map((m) => m.markerIndex);
+  // Long spans are where a mapper's judgement moves the figure most — one pass
+  // folded an unmarked 35s farewell into a 1s marker. List them for a human.
+  const long = billable.perMarker.filter((m) => m.sec > 30).sort((a, b) => b.sec - a.sec);
+  if (long.length) {
+    console.error(`  ${long.length} span(s) over 30s — review that each is one exchange, not a later unmarked beat folded in: ${long.map((m) => `#${m.markerIndex} ${m.charName} ${m.sec.toFixed(0)}s @${ts(m.speech_start)}`).join(", ")}`);
+  }
 } else {
   console.error(`\nNo translations.json in ${baseDir} — step 4 (MAP) has not run, so there is no billable figure yet. Reference figures only.`);
 }

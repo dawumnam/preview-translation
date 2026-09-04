@@ -73,6 +73,16 @@ for (const t of all) {
   if (Array.isArray(t.segments) && t.segments.length > 0) {
     if (t.segments.length > 1) multiSegmentCount++;
 
+    // Normalise segment shape. The contract is {timestamp, text}; one mapper
+    // wrote {speech_start, speech_end, text} instead. Take the start.
+    for (const seg of t.segments as any[]) {
+      if (typeof seg.timestamp !== "number" && typeof seg.speech_start === "number") {
+        seg.timestamp = seg.speech_start;
+      }
+      delete seg.speech_start;
+      delete seg.speech_end;
+    }
+
     // Segment 1's timestamp is the measured start of the marker's speech.
     // Mappers keep writing the script TC here despite instructions, so set
     // it from speech_start rather than rely on them. Not rendered in the
