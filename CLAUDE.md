@@ -10,6 +10,8 @@ Korean variety show production script translator. The HWPX document contains a s
 
 Claude Code is the **orchestrator**. Deterministic steps are CLI scripts; the intelligent mapping step (STT → marker assignment) is delegated to parallel `mapper` subagents.
 
+There is also a **web app** (`bun run web`, see "Web app" below) that runs the same CLI steps as subprocesses per job. Outside Claude Code there are no subagents, so step 4 is `src/map_chunks.ts`: one Gemini call per chunk with the mapper's rules in the prompt, same output contract as the mapper agent.
+
 ## HWP input
 
 If the script arrives as `.hwp` (not `.hwpx`), convert it first:
@@ -154,7 +156,11 @@ have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–6.
 | `src/merge_stt.ts` | CLI: union of all STT passes → stt_results_merged/ (mapper + billing input) |
 | `src/merge_translations.ts` | CLI: merge per-chunk translations → translations.json |
 | `src/speech_duration.ts` | CLI: sum measured foreign-speech minutes from stt_results (billing) |
+| `src/map_chunks.ts` | CLI: step 4 via the Gemini API (used by the web app; usable from the CLI too) |
 | `.claude/agents/mapper.md` | Mapper agent — translates one chunk's markers |
+| `server/index.ts` | Web app: Bun HTTP server, REST + SSE routes, serves `web/` |
+| `server/jobs.ts` | Web app: job store + pipeline runner (spawns the CLI steps) |
+| `web/` | Web app UI: `index.html`, `app.js`, `style.css` (no build step) |
 
 ## Confidence
 
@@ -212,3 +218,38 @@ bun src/apply.ts "<script>.hwpx" <hwpx-dir>/translations.json
 ```
 
 Requires `GEMINI_API_KEY` env var and `ffmpeg` installed.
+
+To run step 4 without Claude Code (what the web app does):
+
+```bash
+bun src/map_chunks.ts <hwpx-dir>/chunks_plan.json [--only 01,02b] [--concurrency 4] [--force]
+```
+
+## Web app
+
+```bash
+bun run web          # http://localhost:3000  (PORT, PT_DATA_DIR to override)
+bun run web:dev      # same, restarts on file changes
+```
+
+One page: create a job (upload `.hwpx`/`.hwp`, give the media either as a
+path on the server's disk — no copy, the multi-GB episode video is read in
+place — or as a browser upload), pick the number of STT passes, start. The
+job page shows each step live (SSE), the full log, a summary (markers,
+billable minutes, confidence counts), the billing breakdown, and an editable
+translations table: fix text, confidence, split/merge TC segments, click a row
+to see the STT lines the translation was written from, then "저장 및 HWPX
+재생성" rewrites `translations.json`, re-runs `apply.ts` and `speech_duration.ts`,
+and the download button serves the new file.
+
+Each job lives in `data/jobs/<id>/work/` and is laid out exactly like a CLI
+run (HWPX + `chunks_plan.json`, `stt_results*/`, `translations/`, ...), so any
+step can be re-run by hand from there and "Retry" resumes from the first
+unfinished step. The STT passes run as parallel processes; a pass with chunks
+still missing afterwards is re-run (each run skips finished chunks). Jobs run
+one at a time (`PT_MAX_ACTIVE_JOBS`).
+
+Mapping quality: on 0828 (33 markers) `map_chunks.ts` matched the Claude
+mapper's speech spans exactly on 20 markers and within 5s on 8 more; the
+5 that differed were alternate readings of one three-marker beat. Billable
+came out 4.02 vs 3.47 min. Review low/medium-confidence rows in the table.

@@ -2,7 +2,10 @@
   "name": "preview-translation",
   "type": "module",
   "scripts": {
-    "start": "bun run src/index.ts"
+    "start": "bun run src/index.ts",
+    "web": "bun run server/index.ts",
+    "web:dev": "bun --watch server/index.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@google/genai": "^1.0.0",
