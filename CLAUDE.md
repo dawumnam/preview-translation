@@ -170,6 +170,7 @@ Long translations are split by mapper agents into multiple segments, each with i
 - Audio chunks: ≤5 min each, 60s leading buffer, 60s trailing buffer
 - Chunk filenames must be ASCII (Gemini upload header restriction)
 - Language codes: 영=English, 독=German, 오=Austrian German (other codes may appear depending on the episode)
+- Only `@@` runs in a **bold** character style are markers (`extractBoldIds` in `src/hwpx.ts`). Writers also type plain `@@(lang)` on lines they are not asking to have translated — on 0826 that was 357 plain lines against 229 bold — so after PLAN compare the marker count with `grep -c '@@'` on the section XML and mention the gap in the report rather than translating the plain lines
 - Recurring cast: 큐=QU, 피=PD, 코=coordinator, 카/카감=camera director
 - Other character abbreviations (검여, 검남, 수남, etc.) are episode-specific
 
