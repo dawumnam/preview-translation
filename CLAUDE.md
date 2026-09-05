@@ -10,7 +10,7 @@ Korean variety show production script translator. The HWPX document contains a s
 
 Claude Code is the **orchestrator**. Deterministic steps are CLI scripts; the intelligent mapping step (STT → marker assignment) is delegated to parallel `mapper` subagents.
 
-There is also a **web app** (`bun run web`, see "Web app" below) that runs the same CLI steps as subprocesses per job. Outside Claude Code there are no subagents, so step 4 is `src/map_chunks.ts`: one Gemini call per chunk with the mapper's rules in the prompt, same output contract as the mapper agent.
+There is also a **web app** (`bun run web`, see "Web app" below). Its default mode runs an **orchestrator agent** built on Google ADK (`server/orchestrator.ts`) that plays the role Claude Code plays here: it runs the CLI steps as tools, inspects what each produced, and applies the corrective actions in this file (re-run STT passes with gaps, re-map a chunk whose markers came back wrong, widen a chunk whose span touches the audio edge) before moving on. Outside Claude Code there are no subagents, so step 4 is `src/map_chunks.ts`: one Gemini call per chunk with the mapper's rules in the prompt, same output contract as the mapper agent.
 
 ## HWP input
 
@@ -159,7 +159,8 @@ have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–6.
 | `src/map_chunks.ts` | CLI: step 4 via the Gemini API (used by the web app; usable from the CLI too) |
 | `.claude/agents/mapper.md` | Mapper agent — translates one chunk's markers |
 | `server/index.ts` | Web app: Bun HTTP server, REST + SSE routes, serves `web/` |
-| `server/jobs.ts` | Web app: job store + pipeline runner (spawns the CLI steps) |
+| `server/jobs.ts` | Web app: job store + runner (agent mode or fixed step order) |
+| `server/orchestrator.ts` | Web app: ADK orchestrator agent + its pipeline tools; `deriveSteps()` reads progress off disk |
 | `web/` | Web app UI: `index.html`, `app.js`, `style.css` (no build step) |
 
 ## Confidence
@@ -245,9 +246,24 @@ and the download button serves the new file.
 Each job lives in `data/jobs/<id>/work/` and is laid out exactly like a CLI
 run (HWPX + `chunks_plan.json`, `stt_results*/`, `translations/`, ...), so any
 step can be re-run by hand from there and "Retry" resumes from the first
-unfinished step. The STT passes run as parallel processes; a pass with chunks
-still missing afterwards is re-run (each run skips finished chunks). Jobs run
-one at a time (`PT_MAX_ACTIVE_JOBS`).
+unfinished step. Jobs run one at a time (`PT_MAX_ACTIVE_JOBS`).
+
+**Agent mode (default).** `server/orchestrator.ts` builds a Google ADK
+`LlmAgent` (`PT_ORCHESTRATOR_MODEL`, default `gemini-3.8-flash`) whose tools
+are `inspect_work_dir` (a structured summary of everything on disk plus
+computed warnings), `run_step` (one CLI step; STT passes and the per-chunk
+mappers are parallel inside the tool because ADK executes tool calls one at a
+time), `read_file`, `delete_outputs`, `widen_chunk` (the procedure under
+"Widening a chunk") and `finish`. Its instruction is this file's pipeline and
+its checks. The server drives a multi-turn session until `finish` is called
+(the model is nudged up to six times if it stops early), mirrors the agent's
+narration and tool calls into the job log, and derives the step rail from the
+files on disk. The agent's final report and review items are shown on the job
+page. Cancel aborts the model loop and kills the running step.
+
+**Fixed mode** runs the steps in order with no judgment (STT passes in
+parallel, a pass with missing chunks re-run once) — the fallback when the
+agent misbehaves or for debugging a single step.
 
 Mapping quality: on 0828 (33 markers) `map_chunks.ts` matched the Claude
 mapper's speech spans exactly on 20 markers and within 5s on 8 more; the

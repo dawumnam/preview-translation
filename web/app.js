@@ -79,6 +79,14 @@
               </select>
               <span class="hint">패스를 여러 번 돌려 합치면 소음 속 조용한 대사를 놓치지 않습니다.</span>
             </div>
+            <div class="field">
+              <label>실행 방식</label>
+              <select name="mode">
+                <option value="agent" selected>에이전트 오케스트레이터 (권장)</option>
+                <option value="fixed">고정 파이프라인</option>
+              </select>
+              <span class="hint">오케스트레이터는 각 단계의 결과를 확인하고 문제(누락된 STT, 잘못 매핑된 청크, 잘린 구간)를 스스로 고친 뒤 진행합니다. 고정 파이프라인은 정해진 순서로만 실행합니다.</span>
+            </div>
           </div>
           <div class="row" style="margin-top:12px">
             <div class="field">
@@ -125,6 +133,7 @@
         const fd = new FormData();
         fd.append("hwpx", form.hwpx.files[0]);
         fd.append("sttPasses", form.sttPasses.value);
+        fd.append("mode", form.mode.value);
         if (!upload) fd.append("mediaPath", pathInput.value.trim());
         hint.textContent = "작업 생성 중…";
         const job = await api("/api/jobs", { method: "POST", body: fd });
@@ -259,7 +268,7 @@
           <a href="#/" class="meta">← 목록</a>
           <h1>${esc(j.name)}</h1>
           ${badge(j.status)}
-          <span class="meta">${fmtDate(j.createdAt)} · STT ${j.options.sttPasses}회 · ${j.files.media ? esc(j.files.media.split("/").pop()) : "영상 없음"}</span>
+          <span class="meta">${fmtDate(j.createdAt)} · ${j.options.mode === "fixed" ? "고정 파이프라인" : "에이전트 오케스트레이터"} · STT ${j.options.sttPasses}회 · ${j.files.media ? esc(j.files.media.split("/").pop()) : "영상 없음"}</span>
           <div class="actions">
             ${j.files.output ? `<a class="btn primary" href="/api/jobs/${esc(j.id)}/download">번역본 HWPX 다운로드</a>` : ""}
             ${canStart ? `<button class="btn" id="btn-start">${j.status === "created" ? "시작" : "재시도 (이어서)"}</button>` : ""}
@@ -285,6 +294,10 @@
       const alerts = [];
       if (j.error) alerts.push(`<div class="alert error"><b>오류:</b> ${esc(j.error)}</div>`);
       for (const w of j.warnings || []) alerts.push(`<div class="alert warn">${esc(w)}</div>`);
+      if (j.report) {
+        const r = j.report;
+        alerts.push(`<div class="alert ${r.status === "done" ? "info" : "error"}"><b>오케스트레이터 보고</b> <span class="meta">(${esc(r.model)}, 모델 호출 ${r.llmCalls}회)</span><div style="white-space:pre-wrap;margin-top:4px">${esc(r.text)}</div>${r.review && r.review.length ? `<ul style="margin:6px 0 0 18px;padding:0">${r.review.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</div>`);
+      }
       if (j.status === "created" && !j.files.media) alerts.push(`<div class="alert info">영상 파일이 아직 없습니다. 목록에서 새 작업을 만들어 주세요.</div>`);
       $("#alerts").innerHTML = alerts.join("");
     }

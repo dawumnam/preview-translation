@@ -8,8 +8,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@google/adk": "^2.0.0",
     "@google/genai": "^1.0.0",
-    "adm-zip": "^0.5.16"
+    "adm-zip": "^0.5.16",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/bun": "latest",

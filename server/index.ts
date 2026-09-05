@@ -74,7 +74,8 @@ const server = Bun.serve({
           const mediaPath = String(form.get("mediaPath") ?? "").trim() || undefined;
           const sttPasses = parseInt(String(form.get("sttPasses") ?? "3"), 10);
           const mapConcurrency = parseInt(String(form.get("mapConcurrency") ?? "4"), 10);
-          const job = await createJob({ hwpx, mediaPath, sttPasses: Number.isFinite(sttPasses) ? sttPasses : 3, mapConcurrency: Number.isFinite(mapConcurrency) ? mapConcurrency : 4 });
+          const mode = String(form.get("mode") ?? "agent") === "fixed" ? "fixed" : "agent";
+          const job = await createJob({ hwpx, mediaPath, mode, sttPasses: Number.isFinite(sttPasses) ? sttPasses : 3, mapConcurrency: Number.isFinite(mapConcurrency) ? mapConcurrency : 4 });
           return json(job, 201);
         } catch (err) {
           return fail(err);
