@@ -113,13 +113,19 @@ export function parseMarkers(xml: string, boldIds?: Set<string>): {
           currentTimestamp = parseTimestamp(tsMatch[1]);
         }
 
-        // Character name (second segment after first tab, must contain Korean)
+        // Character name (second segment after first tab, must contain Korean).
+        // A line missing its leading tab arrives as ["\ud050", "@@(\ubca0)"] instead of
+        // ["", "\ud050", "@@(\ubca0)"]; then the name is segment 0. The marker itself is
+        // never a name \u2014 "@@(\ubca0)" contains a Korean letter.
+        let nameSeg = cleanSegments[1];
+        if (!tsMatch && nameSeg?.startsWith("@@")) nameSeg = cleanSegments[0];
         if (
           cleanSegments.length >= 2 &&
-          cleanSegments[1] &&
-          /[\uac00-\ud7a3]/.test(cleanSegments[1])
+          nameSeg &&
+          /[\uac00-\ud7a3]/.test(nameSeg) &&
+          !nameSeg.includes("@@")
         ) {
-          currentChar = cleanSegments[1];
+          currentChar = nameSeg;
         }
 
         // Marker check: @@ with optional (lang)
