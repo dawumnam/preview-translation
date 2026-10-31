@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import type { Translation } from "./translate";
+import { translationText } from "./replace";
 
 const planPath = process.argv[2];
 if (!planPath) {
@@ -51,89 +52,63 @@ if (gaps.length > 0) {
   process.exit(1);
 }
 
-// Validate segments. Editors want each TC block to cover at most 20s of
-// audio; a segment runs from its timestamp to the next segment's (or to the
-// marker's speech_end for the last one). Overruns are warnings, not errors:
-// a single 22s sentence cannot be cut without splitting it mid-sentence.
-const MAX_SEGMENT_SEC = 20;
-let multiSegmentCount = 0;
-let structuralErrors = 0;
-let overlong = 0;
+// Normalise translation text. replace.ts XML-escapes on insert, so text must
+// be plain: mappers have pre-escaped titles (&lt;서유기&gt;), which would
+// render as literal "&lt;" in the document. Mappers have also joined separate
+// utterances with " / ", which editors do not want in the script.
+function cleanText(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+\/\s+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
 
+let cleaned = 0;
 for (const t of all) {
-  const hasText =
-    (t.translation && t.translation.trim().length > 0) ||
-    (Array.isArray(t.segments) && t.segments.length > 0);
-  if (!hasText) {
-    console.error(`Marker ${t.markerIndex}: no translation or segments`);
-    structuralErrors++;
-    continue;
+  if (typeof t.translation === "string") {
+    const c = cleanText(t.translation);
+    if (c !== t.translation) cleaned++;
+    t.translation = c;
   }
-
-  if (Array.isArray(t.segments) && t.segments.length > 0) {
-    if (t.segments.length > 1) multiSegmentCount++;
-
-    // Normalise segment shape. The contract is {timestamp, text}; one mapper
-    // wrote {speech_start, speech_end, text} instead. Take the start.
-    for (const seg of t.segments as any[]) {
-      if (typeof seg.timestamp !== "number" && typeof seg.speech_start === "number") {
-        seg.timestamp = seg.speech_start;
-      }
-      delete seg.speech_start;
-      delete seg.speech_end;
-    }
-
-    // Segment 1's timestamp is the measured start of the marker's speech.
-    // Mappers keep writing the script TC here despite instructions, so set
-    // it from speech_start rather than rely on them. Not rendered in the
-    // document (only segments 2..N get a TC), but it keeps the data honest.
-    if (typeof t.speech_start === "number" && typeof t.segments[0].timestamp === "number") {
-      t.segments[0].timestamp = t.speech_start;
-    }
-
-    let prevTs = -1;
-    for (const [i, seg] of t.segments.entries()) {
-      if (typeof seg.timestamp !== "number" || !seg.text?.trim()) {
-        console.error(
-          `Marker ${t.markerIndex} segment ${i}: missing timestamp or text`,
-        );
-        structuralErrors++;
-      } else if (seg.timestamp < prevTs) {
-        console.error(
-          `Marker ${t.markerIndex} segment ${i}: timestamp ${seg.timestamp} decreases (prev ${prevTs})`,
-        );
-        structuralErrors++;
-      } else {
-        prevTs = seg.timestamp;
-      }
-    }
-
-    if (typeof t.speech_end === "number") {
-      for (const [i, seg] of t.segments.entries()) {
-        const next = t.segments[i + 1];
-        const end = next ? next.timestamp : t.speech_end;
-        const dur = end - seg.timestamp;
-        if (dur > MAX_SEGMENT_SEC) {
-          overlong++;
-          console.warn(
-            `Warning: marker ${t.markerIndex} segment ${i} covers ${dur.toFixed(1)}s of audio (>${MAX_SEGMENT_SEC}s) — should be split at a sentence boundary`,
-          );
-        }
-      }
-    }
-  } else if (
-    typeof t.speech_start === "number" &&
-    typeof t.speech_end === "number" &&
-    t.speech_end - t.speech_start > MAX_SEGMENT_SEC
-  ) {
-    overlong++;
-    console.warn(
-      `Warning: marker ${t.markerIndex} single translation covers ${(t.speech_end - t.speech_start).toFixed(1)}s of audio (>${MAX_SEGMENT_SEC}s) — should be split into segments`,
-    );
+  for (const seg of (t.segments ?? []) as any[]) {
+    if (typeof seg.text !== "string") continue;
+    const c = cleanText(seg.text);
+    if (c !== seg.text) cleaned++;
+    seg.text = c;
   }
 }
-if (overlong > 0) {
-  console.warn(`Warning: ${overlong} segment(s) exceed ${MAX_SEGMENT_SEC}s`);
+if (cleaned > 0) {
+  console.warn(
+    `Warning: cleaned ${cleaned} text(s) — mapper output had XML entities or " / " joins`,
+  );
+}
+
+// One line per marker, under the script's own TC. Editors found inserted TC
+// lines drifted from the video, so translations are no longer split. If a
+// mapper still wrote several segments, join them into one translation.
+let joinedCount = 0;
+let structuralErrors = 0;
+
+for (const t of all) {
+  if (Array.isArray(t.segments) && t.segments.length > 0) {
+    if (t.segments.length > 1) joinedCount++;
+    t.translation = translationText(t);
+    delete t.segments;
+  }
+  if (!t.translation || t.translation.trim().length === 0) {
+    console.error(`Marker ${t.markerIndex}: no translation text`);
+    structuralErrors++;
+  }
+}
+if (joinedCount > 0) {
+  console.warn(
+    `Warning: joined ${joinedCount} multi-segment translation(s) into one line — the script TC is kept, no TC lines are added`,
+  );
 }
 
 // Validate speech spans — the audio each translation was written from, which
@@ -166,5 +141,5 @@ if (structuralErrors > 0) {
 const outPath = path.join(hwpxDir, "translations.json");
 fs.writeFileSync(outPath, JSON.stringify(all, null, 2) + "\n");
 console.log(
-  `Merged ${all.length} translations from ${chunks.length} chunks (${multiSegmentCount} split into multiple TC segments) → ${outPath}`,
+  `Merged ${all.length} translations from ${chunks.length} chunks → ${outPath}`,
 );

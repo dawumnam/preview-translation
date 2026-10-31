@@ -15,8 +15,8 @@ export interface Translation {
   scene: string;
   speech_start?: number; // abs seconds: audio span this translation was written from
   speech_end?: number; //   (billing basis — see speech_duration.ts)
-  translation?: string; // legacy single-block format
-  segments?: TranslationSegment[]; // split format: long speech broken at sentence/topic boundaries
+  translation?: string; // the Korean text for the marker line
+  segments?: TranslationSegment[]; // legacy split format; replace.ts joins it into one line
   confidence: "high" | "medium" | "low";
 }
 

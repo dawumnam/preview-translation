@@ -68,42 +68,27 @@ Other character abbreviations (검여, 검남, 수남, etc.) are episode-specifi
    - For markers spanning a range (with `endTimestamp`), combine the relevant speech into one coherent translation
 4. Assess confidence: "high" if clear, "medium" if ambiguous, "low" if uncertain
 
-## Step 3: Split long translations into TC segments
+Text rules. The text is inserted verbatim into the script as a subtitle line:
+- **Plain text only.** Never XML/HTML-escape: write `<서유기>`, not
+  `&lt;서유기&gt;`. The apply step escapes on insert; pre-escaped text shows up
+  as a literal `&lt;` in the document.
+- **No ` / ` joins.** When several utterances go into one translation, join them as
+  sentences with normal punctuation (`맞아요. 감사합니다.`), not with slashes.
+- **Only this marker's speaker.** Do not embed the other speaker's lines or
+  speaker tags like `(할) … (큐) …` or `(큐: 뭐가 좀 변했나요?)`. Another
+  speaker's unmarked interjection can still sit inside this marker's span
+  (you transcribed through it), but it is not in the text.
 
-The editors need long speech broken into pieces of at most **20 seconds of
-audio**, each with its own timecode. The rule is about time, not text length:
+## Step 3: Do not split, do not change TCs
 
-- speech span (`speech_end − speech_start`) **≤ 20s** → one segment
-- **> 20s** → split so that **no segment covers more than 20s** of audio
-
-Splitting rules:
-1. Cut at **utterance boundaries** — each STT utterance is a sentence or a
-   turn, so this is a sentence-boundary cut. NEVER cut mid-sentence. Prefer a
-   topic shift if one falls near the cut.
-2. Use as few segments as the cap allows and keep them roughly balanced. A 30s
-   span is two segments of ~15s, not 20s + 10s.
-3. Coverage is measured on the **timeline**: a segment runs from its own
-   `timestamp` to the next segment's `timestamp` (or to `speech_end` for the
-   last one). When two speakers interleave — 큐 and 검여 trading lines under
-   two markers — the other speaker's turns still count toward this segment's
-   span. Do NOT measure only this speaker's own lines; the editor sees one TC
-   block per segment and needs the next TC within 20s of video.
-4. Each segment's `timestamp` (seconds from start of the original audio) is the `abs_start` of the **utterance where that part of the speech begins**. These are real measured times, not estimates — use `abs_start` as-is, no arithmetic.
-5. The first segment's timestamp is also a real `abs_start` — the utterance where
-   the marker's speech actually begins. Do NOT copy the marker's own `timestamp`:
-   that is a hand-typed script TC, and consecutive markers in one beat often share
-   a single TC, which collapses their real timing. Only segments 2..N are rendered
-   as TCs in the document, so segment 1's timestamp is free to be the honest
-   measured value. If no utterance matches at all, fall back to the marker's
-   `timestamp` and set confidence to "low".
-6. If a single utterance is itself longer than 20s (no utterance boundary to
-   cut at), cut it at a sentence boundary, estimate that segment's timestamp
-   proportionally within the utterance, and downgrade the entry's confidence
-   to "medium".
+Each marker gets **one** translation, inserted on the marker's own line under
+the script's TC. Do not split long speech into parts and do not produce new
+timecodes. The editors asked for this: added TC lines did not align with the
+video, and that made editing hard. A long translation stays one line.
 
 ## Output format
 
-Return a JSON array (and nothing else outside the JSON) of translation entries. Each entry uses `segments` — an array of `{timestamp, text}` — even when there is only one segment:
+Return a JSON array (and nothing else outside the JSON) of translation entries. Each entry has one `translation` string:
 
 ```json
 [
@@ -115,19 +100,14 @@ Return a JSON array (and nothing else outside the JSON) of translation entries. 
     "scene": "의상실",
     "speech_start": 304.2,
     "speech_end": 347.9,
-    "segments": [
-      { "timestamp": 304.2, "text": "First part of the translation, cut at a sentence boundary." },
-      { "timestamp": 331.0, "text": "Second part, starting where that speech begins in the audio." }
-    ],
+    "translation": "The whole translation for this marker, as one line.",
     "confidence": "high"
   }
 ]
 ```
 
-Every segment's `timestamp` — including the only segment of a short, unsplit
-translation — is the `abs_start` of the utterance where that text begins. It is
-never the marker's script `timestamp`; that value is hand-typed and shared
-across a whole beat. The splitting rules below do not change this.
+`timestamp` is the marker's script `timestamp`, copied unchanged. It is not
+written to the document; the script's TC stays as it is.
 
 `speech_start` / `speech_end` are the **audio span this translation was written
 from**: the `abs_start` of the first utterance you drew on and the `abs_end` of
@@ -152,7 +132,7 @@ transcribed to write it — so be exact about it:
 - If no utterance matches and you fell back to the marker's own `timestamp`,
   set both to that timestamp (a zero-length span) and confidence "low".
 
-## Step 3: Write output
+## Step 4: Write output
 
 1. Derive the hwpx directory from `chunks_plan_path` (its parent directory).
 2. Write the JSON array to `<hwpx_dir>/translations/<chunk_id>.json` using the Write tool.
@@ -161,6 +141,7 @@ transcribed to write it — so be exact about it:
 ## Important rules
 
 - Every marker MUST have exactly one translation entry — no skips, no extras
+- Every entry has one `translation` string — no `segments`, no new timecodes
 - Every entry MUST carry `speech_start` and `speech_end` (absolute seconds)
 - If the STT has no clear match for a marker, use context clues and set confidence to "low"
 - Korean translations should read naturally as TV subtitles — not word-for-word

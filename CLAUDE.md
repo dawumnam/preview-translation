@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Korean variety show production script translator. The HWPX document contains a script with `@@(영)` / `@@(독)` / `@@(오)` markers where foreign-language speech (English/German/Austrian German) needs Korean translations inserted.
 
+**Only bold `@@` markers are translated.** A marker counts when its run's `charPrIDRef` is a bold char style in `header.xml` (`extractBoldIds()` → `parseMarkers()` / `replaceMarkers()`). Non-bold `@@` lines are left untouched; scripts routinely carry many of them (0929: 139 bold, 186 non-bold). `plan_chunks.ts` prints both counts.
+
 ## Architecture
 
 Claude Code is the **orchestrator**. Deterministic steps are CLI scripts; the intelligent mapping step (STT → marker assignment) is delegated to parallel `mapper` subagents.
@@ -45,16 +47,23 @@ All intermediate outputs are written next to the input HWPX file (not CWD). Path
 
 6. APPLY     bun src/apply.ts <hwpx> <hwpx-dir>/translations.json
               → <hwpx-dir>/<name>_translated.hwpx
+
+7. VERIFY    bun src/verify.ts <hwpx>
+              → exit 0 + "OK", or a list of problems
 ```
 
 Steps 2-3 support resume: already-extracted chunks and STT results are skipped on re-run.
 Step 4 supports resume: chunks with existing `translations/<chunk_id>.json` are skipped on re-run.
 
+Step 5 also normalises mapper text: it decodes XML entities (`&lt;서유기&gt;` → `<서유기>`, since `replace.ts` escapes on insert and pre-escaped text renders literally) and drops ` / ` utterance joins, warning with a count when it had to.
+
+Step 7 is the check before delivery. It reads the output back and confirms: the zip is readable (adm-zip and `unzip -t`), every XML part is well-formed, every bold marker has its translation in order with the right speaker/language, no line was added and each line's TC and speaker are unchanged from the script, low-confidence lines carry `??`, no text is double-escaped or slash-joined, and non-bold `@@` lines and all other script text are byte-identical to the source.
+
 ### Step 4 detail — MAP
 
 The orchestrator handles this directly (no skill needed):
 1. Greps `chunks_plan.json` for `"chunk_id"` values
-2. Spawns one `mapper` agent per chunk **in parallel** (subagent_type: "mapper"), passing file paths + chunk_id
+2. Spawns one `mapper` agent per chunk **in parallel** (subagent_type: "mapper"), passing file paths + chunk_id. At most **20 subagents run at once** — a 21st spawn is refused, not queued. With more chunks than that (three episodes on 1011 had 32), spawn 20, then start the rest as completion notifications free slots, and check `translations/` against the chunk list before merging. `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` raises the cap.
 3. Each agent reads its own chunk data from `chunks_plan.json` and `stt_results_merged/<chunk_id>.json` — never a single pass: quiet lines under noise are heard by one pass in five, and on 0825 six markers' speech was missed by the pass the mappers first read
 4. Each agent matches speech to markers and writes `translations/<chunk_id>.json`
 5. After all agents complete, orchestrator runs `bun src/merge_translations.ts` to merge + validate
@@ -64,8 +73,8 @@ The `mapper` agent (`.claude/agents/mapper.md`) processes a single chunk:
 - Reads markers + STT transcript together — no timestamp arithmetic needed (`abs_start` is pre-resolved)
 - Uses STT-provided Korean translations as a starting point
 - Improves translations using surrounding Korean dialogue context
-- Splits long translations into TC segments so no segment covers more than 20s of audio (cut at utterance/sentence boundaries, as few and as balanced as the cap allows; segment timestamps are the `abs_start` of the matching utterance — including segment 1, never the marker's hand-typed TC)
-- Writes `[{markerIndex, language, charName, timestamp, scene, segments: [{timestamp, text}], confidence}]` to `translations/<chunk_id>.json`
+- Writes one translation per marker — no splitting, no new TCs (see "TCs are fixed")
+- Writes `[{markerIndex, language, charName, timestamp, scene, speech_start, speech_end, translation, confidence}]` to `translations/<chunk_id>.json`
 
 ### Step 3 detail — STT output
 
@@ -122,7 +131,7 @@ not pad beyond that; snapping block edges to real sound/silence transitions
 moved the total −3%, consistent with the tenths result. For a billable figure
 run `stt_chunks.ts` two extra times into `stt_results_2` and `stt_results_3`;
 `speech_duration.ts` averages every `stt_results*` dir it finds and reports the
-spread. Mapping (step 4) keeps reading `stt_results/`.
+spread. Mapping (step 4) reads the union of passes (`stt_results_merged/`), never a single pass.
 
 **What is not measured.** Only audio inside the marker chunks (±60s) is ever
 transcribed — 29 of 91 minutes on 0825. Foreign speech the scriptwriter never
@@ -135,14 +144,14 @@ that chunk: set a larger `audio_end` for it in both `chunks_plan.json` and
 `chunks/<id>.mp3`, `stt_results*/<id>.json` and `stt_results_merged/<id>.json`,
 then run `extract_chunks.ts` on `chunks_uploaded.json` (only that chunk is
 re-extracted and re-uploaded), the STT passes (each skips chunks that already
-have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–6.
+have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–7.
 
 ## Key files
 
 | File | Role |
 |------|------|
 | `src/parser.ts` | `parseMarkers()` — extracts markers + scenes from HWPX XML |
-| `src/hwpx.ts` | `extractHwpx()` / `repackHwpx()` — zip/unzip HWPX |
+| `src/hwpx.ts` | `extractHwpx()` / `repackHwpx()` — zip/unzip HWPX (repack clears the data-descriptor flag hwp2hwpx sets; left set, the output is a zip adm-zip itself cannot reopen) |
 | `src/replace.ts` | `replaceMarkers()` — inserts translations into XML |
 | `src/gemini.ts` | `getGeminiClient()` / `uploadMedia()` — Gemini API helpers |
 | `src/markers.ts` | CLI: dump markers/scenes as JSON |
@@ -154,15 +163,21 @@ have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–6.
 | `src/merge_stt.ts` | CLI: union of all STT passes → stt_results_merged/ (mapper + billing input) |
 | `src/merge_translations.ts` | CLI: merge per-chunk translations → translations.json |
 | `src/speech_duration.ts` | CLI: sum measured foreign-speech minutes from stt_results (billing) |
+| `src/verify.ts` | CLI: check a translated HWPX against its source + translations.json before delivery |
 | `.claude/agents/mapper.md` | Mapper agent — translates one chunk's markers |
 
 ## Confidence
 
 Mapper agents return `"high"`, `"medium"`, or `"low"` confidence per translation. In the final HWPX, `apply.ts` appends `??` to low-confidence translations so editors can review them.
 
-## TC segments
+## TCs are fixed
 
-Long translations are split by mapper agents into multiple segments, each with its own timecode (editor request: long blocks are hard to edit). In the final HWPX, segment 1 replaces the marker text as before; segments 2..N are inserted as new paragraphs formatted `TC<tab>charName<tab>@@(lang) text` (TC in script format: MMSS, or HMMSS past one hour). `replace.ts` handles the paragraph cloning; `merge_translations.ts` validates segment structure (ascending timestamps, warns when a segment covers more than 20s of audio — a segment runs from its timestamp to the next one's, or to the marker's `speech_end`). Legacy single-`translation` entries still work.
+Each translation goes on its marker's own line, under the TC the scriptwriter typed. No line is added and no TC is changed. Earlier runs split long translations into new `TC<tab>charName<tab>@@(lang) text` lines, one for each 20s of audio (editor request). The editors then reported that those TCs drifted from the video and made editing hard. The two requests conflict, so on 2026-11-01 we agreed with them to keep the TCs fixed and to stop splitting.
+
+- The mapper writes one `translation` string for each marker.
+- `merge_translations.ts` joins any `segments` a mapper still writes into one `translation`, and warns with a count.
+- `replace.ts` replaces only the text after `@@(lang)`. Old `translations.json` files with `segments` are joined the same way.
+- `verify.ts` fails if the output has a different count of bold `@@` lines than the source, or if the text before `@@` (TC, speaker) changed on any line.
 
 ## Conventions
 
@@ -177,7 +192,7 @@ Long translations are split by mapper agents into multiple segments, each with i
 
 Before running the pipeline, verify these known pitfalls first:
 
-1. **Mapper agents MUST use `mode: "bypassPermissions"`** — without this, all agents silently hang waiting for Write approval that never comes. Do NOT spawn mapper agents without this mode.
+1. **Mapper agents must be able to write without a prompt** — otherwise they silently hang waiting for Write approval that never comes. See "Mapper agent write permissions" below; confirm it before spawning.
 2. **STT `maxOutputTokens` must cover thinking tokens** — the cap (currently 65536) bounds runaway output, but `thinkingLevel: HIGH` counts against it and has been measured at 14k–30k on one chunk. Too low a cap truncates the JSON mid-string; the run reports `finishReason=MAX_TOKENS` with the token split.
 3. **Multiple files need separate work directories** — never run two HWPX files in the same directory or intermediate files collide.
 4. **STT results sanity check** — after STT completes, check each `stt_results/*.json` for a plausible `utterances` count and `foreign_speech_sec`. Delete and re-run any chunk with zero/near-zero foreign speech that has markers expecting it.
@@ -185,14 +200,14 @@ Before running the pipeline, verify these known pitfalls first:
 ## Multi-file parallel processing
 
 When multiple HWPX files share the same directory, intermediate outputs (chunks_plan.json, stt_results/, etc.) collide. To process in parallel:
-1. Create a temporary work directory per file (e.g., `<hwpx-dir>/0316_work/`)
-2. Copy the HWPX into it
+1. Create a work directory per file (e.g., `<hwpx-dir>/0316_work/`)
+2. Copy the script into it under a short ASCII name (`0316.hwp`, not `0316(1시간 40분) 번역 필요 다움님.hwp`) — delivered names carry spaces, parentheses and Korean, which make every later command fragile. The output is then `0316_translated.hwpx`.
 3. Run the pipeline there
-4. Copy the result out and delete the work directory
+4. Copy `<name>_translated.hwpx` out next to the originals. Keep the work directory until the editors have reviewed the result: it holds `translations.json` (to fix a line and re-apply) and `speech_duration.json` (billing). Delete it after.
 
 ## Mapper agent write permissions
 
-Mapper agents must be spawned with `mode: "bypassPermissions"` to write translation files. The project `.claude/settings.json` allow rules are insufficient for background agents because `defaultMode: "default"` in global settings blocks interactive approval. Always use `mode: "bypassPermissions"` when spawning mapper agents.
+The Agent tool has no per-agent permission mode; a mapper inherits the session's. Background agents cannot answer a permission prompt, and the project `.claude/settings.json` allow rules are not enough because `defaultMode: "default"` in global settings still prompts. So run the orchestrating session in bypass-permissions mode (it was on 1011, and all 32 mappers wrote their files). If the session is not in that mode, ask the user to switch before spawning mappers.
 
 ## Running
 
@@ -203,12 +218,11 @@ bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_2   # billing only: two extra passes
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_3
 bun src/merge_stt.ts <hwpx-dir>/chunks_plan.json                       # union of passes → stt_results_merged/
-# step 4: mappers read stt_results_merged/<chunk_id>.json
-bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
-bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json                 # billable minutes → speech_duration.json
-# step 4: orchestrator spawns mapper agents → translations/<chunk_id>.json
+# step 4: orchestrator spawns mapper agents (≤20 at once) → translations/<chunk_id>.json
 bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
 bun src/apply.ts "<script>.hwpx" <hwpx-dir>/translations.json
+bun src/verify.ts "<script>.hwpx"                                      # must print OK before delivery
+bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json                 # billable minutes → speech_duration.json
 ```
 
-Requires `GEMINI_API_KEY` env var and `ffmpeg` installed.
+Requires `GEMINI_API_KEY` (bun loads it from the project `.env`, so run commands from the project root) and `ffmpeg` installed.
