@@ -128,8 +128,14 @@ const baseDir = path.dirname(resolvedHwpxPath);
 const hwpx = extractHwpx(resolvedHwpxPath);
 const { markers, scenes } = parseMarkers(hwpx.xml, hwpx.boldIds);
 
+// Only bold @@ markers are translated; non-bold ones are left as-is. Show the
+// split so a script that marks things differently is noticed at plan time.
+const nonBold = [
+  ...hwpx.xml.matchAll(/<hp:run\s+charPrIDRef="(\d+)">(.*?)<\/hp:run>/gs),
+].filter(([, id, content]) => content.includes("@@") && !hwpx.boldIds.has(id)).length;
+
 console.error(
-  `Parsed ${markers.length} markers in ${scenes.length} scenes`,
+  `Parsed ${markers.length} bold markers in ${scenes.length} scenes (${nonBold} non-bold @@ skipped)`,
 );
 
 const allChunks: ChunkPlan[] = [];

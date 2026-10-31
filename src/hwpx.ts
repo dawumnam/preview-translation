@@ -33,6 +33,14 @@ export function extractHwpx(filePath: string): HwpxData {
 export function repackHwpx(data: HwpxData, newXml: string): string {
   data.zip.updateFile("Contents/section0.xml", Buffer.from(newXml, "utf-8"));
 
+  // hwp2hwpx output sets the data-descriptor flag (bit 3) on every entry.
+  // adm-zip keeps the flag but writes CRC/sizes into the local header and no
+  // descriptor, so the result is a zip that adm-zip itself (and any strict
+  // reader) rejects. Clear the flag to match what is actually written.
+  for (const entry of data.zip.getEntries()) {
+    entry.header.flags_desc = false;
+  }
+
   const ext = path.extname(data.filePath);
   const base = data.filePath.slice(0, -ext.length);
   const outPath = `${base}_translated${ext}`;

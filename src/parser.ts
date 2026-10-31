@@ -113,13 +113,24 @@ export function parseMarkers(xml: string, boldIds?: Set<string>): {
           currentTimestamp = parseTimestamp(tsMatch[1]);
         }
 
-        // Character name (second segment after first tab, must contain Korean)
+        // Character name (second segment after first tab, must contain Korean).
+        // When the leading TC tab sits in its own run, this <hp:t> is just
+        // "name<tab>@@(\uc911)": the name is the first segment, and the second is
+        // the marker itself (\uc911 is Hangul, so it would pass the Korean test).
         if (
           cleanSegments.length >= 2 &&
           cleanSegments[1] &&
           /[\uac00-\ud7a3]/.test(cleanSegments[1])
         ) {
-          currentChar = cleanSegments[1];
+          if (!cleanSegments[1].startsWith("@@")) {
+            currentChar = cleanSegments[1];
+          } else if (
+            cleanSegments[0] &&
+            !tsMatch &&
+            /[\uac00-\ud7a3]/.test(cleanSegments[0])
+          ) {
+            currentChar = cleanSegments[0];
+          }
         }
 
         // Marker check: @@ with optional (lang)
