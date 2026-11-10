@@ -11,6 +11,7 @@
 // Nothing here waits for a person or for an agent. The slowest single model
 // call sets the run time.
 import { execFile } from "child_process";
+import { createHash } from "crypto";
 import fs from "fs";
 import path from "path";
 import { promisify } from "util";
@@ -31,6 +32,9 @@ export const MODELS = {
   // (0.90 against 0.89 on the blind benchmark) and answers in 8 s instead of
   // 34 s, with no thinking tokens to pay for.
   listen: process.env.LISTEN_MODEL || "gemini-4-argon",
+  // The brief is text work on the script, and listening waits for it.
+  // gemini-3.5-flash writes it in 7 s; Argon and 3.8 Flash need 15 to 40 s.
+  brief: process.env.BRIEF_MODEL || "gemini-3.5-flash",
   fallback: process.env.FALLBACK_MODEL || "gemini-3.8-flash",
   judge: process.env.JUDGE_MODEL || "gemini-3.8-flash",
 };
@@ -193,8 +197,11 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
       await decodeAudio(mediaPath, pcm, mediaDur);
     }),
     timed("brief", async () => {
-      brief = saved<Brief>("brief.json") ?? (await makeBrief(lines, MODELS.listen)) ?? (await makeBrief(lines, MODELS.fallback));
-      if (brief) save("brief.json", brief);
+      // The saved brief is for one version of the script.
+      const key = createHash("sha1").update(hwpx.xml).digest("hex");
+      const old = saved<Brief & { key?: string }>("brief.json");
+      brief = (old?.key === key ? old : null) ?? (await makeBrief(lines, MODELS.brief)) ?? (await makeBrief(lines, MODELS.listen));
+      if (brief) save("brief.json", { ...brief, key });
       else problems.push("no episode brief: names may be spelled differently from the script");
     }),
   ]);
@@ -216,14 +223,29 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
     done++;
     if (done % 20 === 0 || done === totalWindows) log(`listening: ${done}/${totalWindows} windows`);
   };
+  // A saved pass is used again only for the same script, media and plan: a
+  // new version of the script can move every marker index.
+  const planKey = (windows: ListenWindow[], extra: unknown = null) =>
+    createHash("sha1")
+      .update(
+        JSON.stringify([
+          mediaPath, Math.round(mediaDur), MODELS.listen, po.brief, [...(po.mask ?? [])],
+          markers.map((m) => [m.index, m.charName, m.timestamp, m.language]),
+          windows.map((w) => [w.start, w.end, w.markers.map((l) => l.marker!.index)]),
+          extra,
+        ]),
+      )
+      .digest("hex");
+  type SavedPass = ListenResult & { key?: string };
   const runPass = async (cfg: PassConfig, windows: ListenWindow[], file: string): Promise<ListenResult> => {
-    const old = saved<ListenResult>(file);
-    if (old && markers.every((m) => old.candidates.some((c) => c.marker === m.index)) && old.failed.length === 0) {
+    const key = planKey(windows);
+    const old = saved<SavedPass>(file);
+    if (old && old.key === key && old.failed.length === 0) {
       for (const _ of windows) tick();
       return old;
     }
     const r = await listenPass(cfg, windows, pcm, po, mediaDur, tick);
-    save(file, r);
+    save(file, { ...r, key });
     return r;
   };
   const [ra, rb] = await timed("listen", () =>
@@ -260,19 +282,20 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
     // 0.90/0.89/0.91 on the benchmark), so the focused listens keep the
     // level of the passes. What they add is a closer window, the settled
     // neighbours as fixed points, and three more independent hearings.
+    const keyC = planKey(windowsC, [...known]);
     const rcs = await timed("focused", () =>
       Promise.all(
         ["C1", "C2", "C3"].map(async (name) => {
           const file = `pass_${name.toLowerCase()}.json`;
-          const old = saved<ListenResult>(file);
-          if (old && open.every((m) => old.candidates.some((c) => c.marker === m)) && old.failed.length === 0) return old;
+          const old = saved<SavedPass>(file);
+          if (old && old.key === keyC && old.failed.length === 0) return old;
           const r = await listenPass({ ...passA, name }, windowsC, pcm, { ...po, known }, mediaDur);
-          save(file, r);
+          save(file, { ...r, key: keyC });
           return r;
         }),
       ),
     );
-    for (const f of rcs[0].failed) problems.push(`window ${f.window}: ${f.reason}`);
+    for (const r of rcs) for (const f of r.failed) problems.push(`window ${f.window} (${r.candidates[0]?.pass ?? "focused"}): ${f.reason}`);
     focusedListens = rcs.map((r) => byMarker(r.candidates));
     const second = await consensus(open, [a, b], focusedListens, MODELS.judge);
     for (const [m, d] of second) decisions.set(m, d);

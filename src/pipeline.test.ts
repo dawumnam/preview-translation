@@ -6,6 +6,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { sliceWav, SAMPLE_RATE } from "./audio";
+import { tidyGlossary } from "./brief";
 import { callJson } from "./llm";
 import type { Candidate } from "./listen";
 import { parseMarkers } from "./parser";
@@ -73,6 +74,23 @@ describe("script timeline", () => {
     const u = lines.filter((l) => l.kind === "unrequested");
     expect(u.length).toBe(1);
     expect(u[0].speaker).toBe("큐");
+  });
+});
+
+describe("episode brief", () => {
+  test("one spelling for each thing, picked by its count in the script", () => {
+    const script = "끌라비 만드는 검여\n끌라비 맛있다\n클라피 보는 큐\n미쭈리 내부";
+    const g = tidyGlossary(
+      [
+        { ko: "클라피", variants: ["끌라비", "틀라비"], original: "ტყლაპი", meaning: "fruit leather" },
+        { ko: "미쭈리", variants: [], original: "მიწური", meaning: "earth house" },
+        { ko: "하차푸리", variants: [], original: "ხაჭაპური", meaning: "cheese bread" }, // not in this script
+        { ko: "끌라비", variants: [], original: "tklapi", meaning: "listed twice" },
+      ],
+      script,
+    );
+    expect(g.map((x) => x.ko)).toEqual(["끌라비", "미쭈리"]);
+    expect(g[0].original).toBe("ტყლაპი");
   });
 });
 

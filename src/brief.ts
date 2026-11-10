@@ -36,10 +36,15 @@ const SCHEMA = {
         type: "OBJECT",
         properties: {
           ko: { type: "STRING", description: "The word exactly as the script spells it in Korean" },
+          variants: {
+            type: "ARRAY",
+            items: { type: "STRING" },
+            description: "Other spellings of the same word that the script also uses. Empty when there is one spelling.",
+          },
           original: { type: "STRING", description: "The word in the local language and script, if you know it; else empty" },
           meaning: { type: "STRING", description: "What it is, in a few English words" },
         },
-        required: ["ko", "original", "meaning"],
+        required: ["ko", "variants", "original", "meaning"],
       },
     },
   },
@@ -59,12 +64,39 @@ export async function makeBrief(lines: ScriptLine[], model: string): Promise<Bri
 
 1. summary: where this is and what happens.
 2. cast: every speaker label that has dialogue or a foreign-language turn. 큐 is the Korean host, 피 the director, 코 the coordinator/interpreter. Other labels name locals by look (모남 = man in a hat, 검여 = woman in black, 할 = grandfather ...). Use the shot descriptions and dialogue to say who each one is.
-3. glossary: every proper noun and local word in the script that an interpreter could spell another way: place names, people's names, dishes, drinks, tools, buildings, customs. Give the script's own Korean spelling. If the script spells one thing in two ways, list the more frequent one. Leave out ordinary Korean words.
+3. glossary: every proper noun and local word in the script that an interpreter could spell another way: place names, people's names, dishes, drinks, tools, buildings, customs. Give the script's own Korean spelling, with no particle attached. If the script spells one thing in several ways, make ONE entry and put the other spellings in \`variants\`. Leave out ordinary Korean words.
 
 ## Script
 ${text}`;
-  const r = await callJson<Brief>({ model, parts: [{ text: prompt }], schema: SCHEMA, thinkingLevel: "LOW", timeoutMs: 120_000, attempts: 3, label: "brief" });
-  return r.value ?? null;
+  const r = await callJson<Brief>({
+    model, parts: [{ text: prompt }], schema: SCHEMA, thinkingLevel: "LOW",
+    timeoutMs: 60_000, hedgeAfterMs: 15_000, attempts: 2, label: "brief",
+  });
+  if (!r.value || !Array.isArray(r.value.glossary) || !Array.isArray(r.value.cast)) return null;
+  return { ...r.value, glossary: tidyGlossary(r.value.glossary, text) };
+}
+
+/**
+ * One spelling for each thing, and only spellings that are in the script.
+ * Scripts spell one word in several ways (1025: 끌라비 four times, 클라피 and
+ * 틀라비 once each). The model groups the spellings; the count in the script
+ * picks the one to use.
+ */
+export function tidyGlossary(
+  glossary: (Brief["glossary"][number] & { variants?: string[] })[],
+  scriptText: string,
+): Brief["glossary"] {
+  const count = (word: string) => (word ? scriptText.split(word).length - 1 : 0);
+  const out: Brief["glossary"] = [];
+  const seen = new Set<string>();
+  for (const entry of glossary) {
+    const spellings = [entry.ko, ...(entry.variants ?? [])].map((w) => (w ?? "").trim()).filter(Boolean);
+    const ranked = spellings.map((w) => ({ w, n: count(w) })).filter((x) => x.n > 0).sort((x, y) => y.n - x.n);
+    if (!ranked.length || seen.has(ranked[0].w)) continue; // not in the script, or listed twice
+    seen.add(ranked[0].w);
+    out.push({ ko: ranked[0].w, original: entry.original ?? "", meaning: entry.meaning ?? "" });
+  }
+  return out;
 }
 
 /** The brief as prompt text. */
