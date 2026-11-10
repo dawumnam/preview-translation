@@ -9,8 +9,7 @@ import path from "path";
 import AdmZip from "adm-zip";
 import { extractHwpx } from "./hwpx";
 import { parseMarkers } from "./parser";
-import type { Translation } from "./translate";
-import { translationText } from "./replace";
+import { translationText, type Translation } from "./replace";
 
 const srcPath = process.argv[2];
 if (!srcPath) {

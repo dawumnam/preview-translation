@@ -1,7 +1,6 @@
 import fs from "fs";
 import { extractHwpx, repackHwpx } from "./hwpx";
-import { replaceMarkers } from "./replace";
-import type { Translation } from "./translate";
+import { replaceMarkers, type Translation } from "./replace";
 
 const hwpxPath = process.argv[2];
 const jsonPath = process.argv[3];

@@ -1,0 +1,235 @@
+// Tests for the parts that have no model in them: the script timeline, the
+// window plan, the audio slices, the agreement measure and the call wrapper.
+//   bun test
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { sliceWav, SAMPLE_RATE } from "./audio";
+import { callJson } from "./llm";
+import type { Candidate } from "./listen";
+import { parseMarkers } from "./parser";
+import { buildFillPrompt } from "./prompt";
+import { consensus, firstRound, textSim } from "./reconcile";
+import { parseScript } from "./script";
+import { DEFAULT_WINDOW, planWindows } from "./windows";
+
+const TAB = '<hp:tab width="1" leader="0" type="1"/>';
+const BOLD = new Set(["12"]);
+/** One script paragraph. `bold` puts the whole line in the bold (requested) style. */
+const p = (cells: string[], bold = false) =>
+  `<hp:p id="0"><hp:run charPrIDRef="${bold ? 12 : 3}"><hp:t>${cells.join(TAB)}</hp:t></hp:run></hp:p>`;
+const doc = (paras: string[]) => `<hs:sec>${paras.join("")}</hs:sec>`;
+
+const SCRIPT = doc([
+  p(["1104"], true), // title: the date, not a TC
+  p(["# 식당"]),
+  p(["0100", "식당 fs"]),
+  p(["0110", "피", "언제부터 하셨어요?"]),
+  p(["", "코", "@@(조)"], true), // marker 0
+  p(["", "모남", "@@(조)"], true), // marker 1
+  p(["0125", "코", "30년 됐대요"]),
+  p(["", "큐", "@@(조)"]), // not requested
+  p(["140623", "모남", "@@(조)"], true), // marker 2, TC typo
+  p(["0140", "식당 내부"]),
+  p(["1000", "모남", "@@(조)"], true), // marker 3, far away
+  p(["1012", "큐", "와"]),
+]);
+
+describe("script timeline", () => {
+  const { lines, markers } = parseScript(SCRIPT, BOLD);
+  const m = (i: number) => lines.find((l) => l.marker?.index === i)!;
+
+  test("markers match parseMarkers one to one", () => {
+    const ref = parseMarkers(SCRIPT, BOLD).markers;
+    expect(markers.length).toBe(4);
+    expect(lines.filter((l) => l.kind === "marker").map((l) => l.marker!.index)).toEqual([0, 1, 2, 3]);
+    for (const r of ref) {
+      expect(m(r.index).marker!.charName).toBe(r.charName);
+      expect(m(r.index).speaker).toBe(r.charName);
+    }
+  });
+
+  test("a marker is bounded by the TC lines around it", () => {
+    expect(m(0).tcPrev).toBe(70); // 01:10
+    expect(m(0).tcNext).toBe(85); // 01:25
+    expect(m(1).tcPrev).toBe(70);
+    expect(m(1).tcNext).toBe(85);
+  });
+
+  test("a TC out of sequence is not a bound", () => {
+    expect(m(2).tc).toBeUndefined();
+    expect(m(2).tcSuspect).toBe(14 * 3600 + 6 * 60 + 23);
+    expect(m(2).tcPrev).toBe(85);
+    expect(m(2).tcNext).toBe(100); // 01:40
+  });
+
+  test("the date in the title line is not a TC", () => {
+    expect(lines.find((l) => l.kind === "shot" && l.text === "식당 fs")!.tcPrev).toBe(60);
+    expect(lines.every((l) => l.tc !== 11 * 60 + 4)).toBe(true);
+  });
+
+  test("non-bold @@ lines are kept as unrequested turns", () => {
+    const u = lines.filter((l) => l.kind === "unrequested");
+    expect(u.length).toBe(1);
+    expect(u[0].speaker).toBe("큐");
+  });
+});
+
+describe("window plan", () => {
+  const { lines } = parseScript(SCRIPT, BOLD);
+  const o = { ...DEFAULT_WINDOW, mediaDur: 3600 };
+  const windows = planWindows(lines, o);
+
+  test("near markers share a window, far ones do not", () => {
+    expect(windows.map((w) => w.markers.map((l) => l.marker!.index))).toEqual([[0, 1, 2], [3]]);
+  });
+
+  test("each window holds the whole range of its markers", () => {
+    for (const w of windows)
+      for (const l of w.markers) {
+        expect(w.start).toBeLessThanOrEqual(Math.max(0, l.tcPrev - o.pre));
+        expect(w.end).toBeGreaterThanOrEqual(Math.min(o.mediaDur, l.tcNext + o.post));
+      }
+  });
+
+  test("the prompt marks only the window's own markers, with clip times", () => {
+    const text = buildFillPrompt(windows[0]);
+    expect(text).toContain("▶0 코: (조지아어)");
+    expect(text).toContain("▶2 모남: (조지아어)");
+    expect(text).not.toContain("▶3");
+    expect(text).toContain("큐: (외국어 — a foreign-language turn that is not requested)");
+    // 01:10 in the script is 8 s into a window that starts at 01:02.
+    expect(text).toContain("[00:08] 피: 언제부터 하셨어요?");
+  });
+
+  test("a masked line shows no text", () => {
+    const key = lines.find((l) => l.text === "30년 됐대요")!;
+    const text = buildFillPrompt(windows[0], { mask: new Set([key.no]) });
+    expect(text).not.toContain("30년 됐대요");
+    expect(text).toContain("코: (한국어 — text withheld)");
+  });
+});
+
+describe("audio slices", () => {
+  test("a slice is a valid WAV of the asked length", () => {
+    const pcm = path.join(os.tmpdir(), `pt-test-${process.pid}.pcm`);
+    const samples = new Int16Array(SAMPLE_RATE * 3).map((_, i) => i % 1000);
+    fs.writeFileSync(pcm, Buffer.from(samples.buffer));
+    try {
+      const wav = sliceWav(pcm, 1, 2.5);
+      expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
+      expect(wav.readUInt32LE(24)).toBe(SAMPLE_RATE);
+      expect(wav.readUInt32LE(40)).toBe(1.5 * SAMPLE_RATE * 2);
+      expect(wav.length).toBe(44 + 1.5 * SAMPLE_RATE * 2);
+      expect(wav.readInt16LE(44)).toBe(SAMPLE_RATE % 1000); // first sample is the one at 1.0 s
+      expect(sliceWav(pcm, 2, 10).readUInt32LE(40)).toBe(SAMPLE_RATE * 2); // cut at the end of the file
+    } finally {
+      fs.rmSync(pcm, { force: true });
+    }
+  });
+});
+
+const cand = (marker: number, pass: string, ko: string, source = ko, start = 10, end = 12): Candidate => ({
+  marker, pass, heard: true, source, ko, start, end, selfConfidence: "high", window: "w",
+});
+const map = (...cs: Candidate[]) => new Map(cs.map((c) => [c.marker, c]));
+
+describe("decisions", () => {
+  // No network in these tests: the judge model is "not there", so compare()
+  // falls back on text overlap alone.
+  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    globalThis.fetch = (async () => new Response("{}", { status: 404 })) as any;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("text overlap", () => {
+    expect(textSim(cand(0, "A", "이 화덕은 300년 됐어요"), cand(0, "B", "이 화덕은 300년 됐어요."))).toBe(1);
+    expect(textSim(cand(0, "A", "이 화덕은 300년 됐어요"), cand(0, "B", "내일 눈이 온대요"))).toBeLessThan(0.2);
+  });
+
+  test("two passes that agree make a line high; no model call is needed for close text", async () => {
+    const a = map(cand(0, "A", "이 화덕은 300년 됐어요"));
+    const b = map(cand(0, "B", "이 화덕은 300년 됐어요."));
+    const d = await firstRound(a, b, [0], "no-model");
+    expect(d.get(0)!.confidence).toBe("high");
+  });
+
+  test("neighbours that are the wrong way round in time are both reopened", async () => {
+    const a = map(cand(0, "A", "첫 번째 말이에요", "x", 30, 34), cand(1, "A", "두 번째 말이에요", "y", 10, 14));
+    const b = map(cand(0, "B", "첫 번째 말이에요", "x", 30, 34), cand(1, "B", "두 번째 말이에요", "y", 10, 14));
+    const d = await firstRound(a, b, [0, 1], "no-model");
+    expect(d.get(0)).toBeNull();
+    expect(d.get(1)).toBeNull();
+  });
+
+  test("three of five listens that agree make a line medium; fewer make it low", async () => {
+    const say = "여기서 30년 일했어요";
+    const passes = [map(cand(0, "A", say), cand(1, "A", "가나다라마바사")), map(cand(0, "B", "전혀 다른 내용입니다"), cand(1, "B", "아자차카타파하"))];
+    const focused = [
+      map(cand(0, "C1", say), cand(1, "C1", "거너더러머버서")),
+      map(cand(0, "C2", say), cand(1, "C2", "고노도로모보소")),
+      map(cand(0, "C3", "또 다른 내용이에요"), cand(1, "C3", "구누두루무부수")),
+    ];
+    const d = await consensus([0, 1, 2], passes, focused, "no-model");
+    expect(d.get(0)!.confidence).toBe("medium");
+    expect(d.get(0)!.agree).toBe(3);
+    expect(d.get(0)!.pick!.pass.startsWith("C")).toBe(true);
+    expect(d.get(1)!.confidence).toBe("low");
+    expect(d.get(2)!.pick).toBeUndefined(); // nobody heard marker 2
+    expect(d.get(2)!.confidence).toBe("low");
+  });
+});
+
+describe("model calls", () => {
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.GEMINI_API_KEY;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    process.env.GEMINI_API_KEY = realKey;
+  });
+  const reply = (obj: unknown, status = 200) => new Response(JSON.stringify(obj), { status });
+  const ok = (value: unknown) => reply({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }] });
+  const base = { model: "m", parts: [{ text: "x" }], schema: { type: "ARRAY" } };
+
+  test("a server error is tried again", async () => {
+    process.env.GEMINI_API_KEY = "test";
+    let n = 0;
+    globalThis.fetch = (async () => (++n === 1 ? reply({ error: "busy" }, 503) : ok([1]))) as any;
+    const r = await callJson<number[]>({ ...base, attempts: 2 });
+    expect(r.value).toEqual([1]);
+    expect(n).toBe(2);
+  });
+
+  test("a blocked prompt is reported and not sent again", async () => {
+    process.env.GEMINI_API_KEY = "test";
+    let n = 0;
+    globalThis.fetch = (async () => (n++, reply({ promptFeedback: { blockReason: "OTHER" } }))) as any;
+    const r = await callJson({ ...base, attempts: 4 });
+    expect(r.blocked).toBe("OTHER");
+    expect(n).toBe(1);
+  });
+
+  test("a slow call is overtaken by its duplicate", async () => {
+    process.env.GEMINI_API_KEY = "test";
+    let n = 0;
+    globalThis.fetch = ((_: any, init: any) =>
+      ++n === 1
+        ? new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))))
+        : Promise.resolve(ok({ fast: true }))) as any;
+    const r = await callJson<{ fast: boolean }>({ ...base, hedgeAfterMs: 20, attempts: 1 });
+    expect(r.value).toEqual({ fast: true });
+    expect(n).toBe(2);
+  });
+
+  test("a truncated answer is not accepted", async () => {
+    process.env.GEMINI_API_KEY = "test";
+    globalThis.fetch = (async () => reply({ candidates: [{ finishReason: "MAX_TOKENS", content: { parts: [{ text: "[1," }] } }] })) as any;
+    const r = await callJson({ ...base, attempts: 1 });
+    expect(r.value).toBeUndefined();
+    expect(r.error).toContain("MAX_TOKENS");
+  });
+});
