@@ -68,6 +68,17 @@ Other character abbreviations (검여, 검남, 수남, etc.) are episode-specifi
    - For markers spanning a range (with `endTimestamp`), combine the relevant speech into one coherent translation
 4. Assess confidence: "high" if clear, "medium" if ambiguous, "low" if uncertain
 
+The `context` array holds the scene's script lines in order, with every `@@`
+line in its place:
+- `코 @@(조) [marker 12]` is one of your markers (or a marker of another chunk
+  in the same scene).
+- `코 @@(조) [not requested]` is an `@@` line the client did not ask for (not
+  bold). It still takes its turn in the exchange: the speech at that position
+  belongs to it, so leave that speech out of your markers' translations and
+  spans. Some scripts have as many unrequested `@@` lines as requested ones.
+  Use the Korean lines around each `[marker N]` (the question before it and the
+  interpretation after it) to find exactly which turn it is.
+
 Text rules. The text is inserted verbatim into the script as a subtitle line:
 - **Plain text only.** Never XML/HTML-escape: write `<서유기>`, not
   `&lt;서유기&gt;`. The apply step escapes on insert; pre-escaped text shows up

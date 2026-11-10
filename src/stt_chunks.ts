@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { ThinkingLevel, Type } from "@google/genai";
 import { getGeminiClient } from "./gemini";
-import { formatTimestamp } from "./parser";
+import { formatTimestamp, LANG_NAME } from "./parser";
 
 const MODEL = "gemini-3.8-flash";
 // Caps runaway output (see pre-flight checklist), but must also cover thinking
@@ -13,23 +13,41 @@ const MODEL = "gemini-3.8-flash";
 // speech than MEDIUM/LOW, and speech it misses becomes a marker with no match.
 const MAX_OUTPUT_TOKENS = 65536;
 
-const uploadedPath = process.argv[2];
-// Optional output dir name. Extra passes (stt_results_2, stt_results_3, ...)
-// exist so speech_duration.ts can average them: a single pass is ±4% on the
-// billable total, the mean of three is ±2%. Mapping still reads stt_results.
-const outDirName = process.argv[3] || "stt_results";
-if (!uploadedPath) {
-  console.error("Usage: bun src/stt_chunks.ts <chunks_uploaded.json> [out-dir-name=stt_results]");
+// Usage:
+//   bun src/stt_chunks.ts <chunks_uploaded.json> --passes 3   (stt_results, _2, _3)
+//   bun src/stt_chunks.ts <chunks_uploaded.json> [out-dir-name=stt_results]
+// Several passes exist because one pass misses quiet lines that another hears
+// (merge_stt.ts takes the union) and so speech_duration.ts can average them.
+// Every (pass, chunk) job runs at the same time; set STT_CONCURRENCY to cap it.
+const args = process.argv.slice(2);
+const uploadedPath = args[0];
+if (!uploadedPath || uploadedPath.startsWith("--")) {
+  console.error(
+    "Usage: bun src/stt_chunks.ts <chunks_uploaded.json> [--passes N | out-dir-name=stt_results]",
+  );
   process.exit(1);
 }
+const passesFlag = args.indexOf("--passes");
+const passNames: string[] =
+  passesFlag >= 0
+    ? Array.from({ length: Math.max(1, parseInt(args[passesFlag + 1], 10) || 1) }, (_, k) =>
+        k === 0 ? "stt_results" : `stt_results_${k + 1}`,
+      )
+    : [args[1] || "stt_results"];
+
+const CONCURRENCY = parseInt(process.env.STT_CONCURRENCY || "", 10) || Infinity;
+// Gemini blocks some requests at random (promptFeedback.blockReason=OTHER, an
+// empty response); the same request often goes through on a later try. On 1028
+// one chunk needed 4+ tries in a pass. A chunk that is blocked on every try has
+// to be split into shorter pieces (see CLAUDE.md, "Blocked chunks").
+const MAX_ATTEMPTS = parseInt(process.env.STT_ATTEMPTS || "", 10) || 6;
 
 const plan = JSON.parse(fs.readFileSync(uploadedPath, "utf-8"));
 const baseDir = path.dirname(path.resolve(plan.hwpx_path));
 
-// Create output directory
-const outDir = path.join(baseDir, outDirName);
-if (!fs.existsSync(outDir)) {
-  fs.mkdirSync(outDir);
+for (const name of passNames) {
+  const dir = path.join(baseDir, name);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
 }
 
 const ai = getGeminiClient();
@@ -62,7 +80,7 @@ const RESPONSE_SCHEMA = {
       language: {
         type: Type.STRING,
         description:
-          "Language actually spoken: 한국어, 베트남어, 영어, 독일어, etc. Use a slash for code-switching, e.g. 베트남어/한국어",
+          "Language actually spoken: 한국어, 조지아어, 베트남어, 영어, 독일어, etc. Use a slash for code-switching, e.g. 베트남어/한국어",
       },
       text: { type: Type.STRING, description: "Verbatim transcription" },
       translation: {
@@ -106,7 +124,7 @@ function buildSTTPrompt(chunk: any): string {
 
 ## Scene: "${chunk.scene}"
 Time range in original: ${formatTimestamp(chunk.start_sec)} - ${formatTimestamp(chunk.end_sec)}
-Foreign languages spoken: ${langs.join("/")}
+Foreign languages spoken: ${langs.map((c) => LANG_NAME[c as string] ?? c).join("/")}
 Characters speaking foreign language: ${chars.join(", ")}
 
 ## Surrounding Korean dialogue for context
@@ -125,37 +143,28 @@ crew chatter, narration and retakes included. Do not skip any speech.
 - \`translation\` is Korean; leave it as an empty string for Korean utterances.`;
 }
 
-for (let i = 0; i < plan.chunks.length; i++) {
-  const chunk = plan.chunks[i];
-  const outFile = path.join(outDir, `${chunk.chunk_id}.json`);
+async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await fn(items[next++]);
+  });
+  await Promise.all(workers);
+}
 
-  // Skip if already done — check for actual utterances, not just a valid file
-  if (fs.existsSync(outFile)) {
-    try {
-      const existing = JSON.parse(fs.readFileSync(outFile, "utf-8"));
-      if (Array.isArray(existing.utterances) && existing.utterances.length > 0) {
-        console.error(
-          `[${i + 1}/${plan.chunks.length}] ${chunk.chunk_id} — already done, skipping`,
-        );
-        continue;
-      }
-    } catch {
-      // fall through and retry
-    }
-    console.error(
-      `[${i + 1}/${plan.chunks.length}] ${chunk.chunk_id} — incomplete result, retrying...`,
-    );
+function hasResult(outFile: string): boolean {
+  if (!fs.existsSync(outFile)) return false;
+  try {
+    const existing = JSON.parse(fs.readFileSync(outFile, "utf-8"));
+    return Array.isArray(existing.utterances) && existing.utterances.length > 0;
+  } catch {
+    return false;
   }
+}
 
-  console.error(
-    `[${i + 1}/${plan.chunks.length}] STT ${chunk.chunk_id} (${chunk.scene}, ${chunk.markers.length} markers)...`,
-  );
-
+/** One STT call with retries. Returns the parsed utterances, or [] after MAX_ATTEMPTS. */
+async function transcribe(chunk: any, tag: string): Promise<any[]> {
   const prompt = buildSTTPrompt(chunk);
-  let utterances: any[] = [];
-  let retries = 0;
-
-  while (retries <= 2) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const response = await ai.models.generateContent({
         model: MODEL,
@@ -191,83 +200,121 @@ for (let i = 0; i < plan.chunks.length; i++) {
         );
       }
       const raw = response.text?.trim() || "";
-      if (!raw) throw new Error("empty response");
+      if (!raw) {
+        const u = response.usageMetadata ?? ({} as any);
+        throw new Error(
+          `empty response (finishReason=${finishReason ?? "none"}, promptFeedback=${JSON.stringify(response.promptFeedback ?? null)}, thoughts=${u.thoughtsTokenCount ?? "?"}, output=${u.candidatesTokenCount ?? "?"})`,
+        );
+      }
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) throw new Error("response was not an array");
-      utterances = parsed;
-      break;
+      return parsed;
     } catch (err: any) {
-      retries++;
-      const isRateLimit =
-        err?.status === 429 || err?.message?.includes("429");
-      const backoff = isRateLimit
-        ? Math.pow(2, retries) * 3000
-        : 2000;
-      console.error(
-        `  Error: ${err.message}. Retry ${retries}/2 in ${backoff / 1000}s...`,
-      );
-      await new Promise((r) => setTimeout(r, backoff));
+      const isRateLimit = err?.status === 429 || err?.message?.includes("429");
+      // Many jobs run at once, so back off harder on 429 and add jitter so
+      // they do not all come back in the same second.
+      const backoff =
+        (isRateLimit ? Math.min(60000, Math.pow(2, attempt) * 5000) : 3000 * attempt) +
+        Math.random() * 2000;
+      if (attempt < MAX_ATTEMPTS) {
+        console.error(
+          `${tag} error: ${err.message}. Retry ${attempt}/${MAX_ATTEMPTS - 1} in ${Math.round(backoff / 1000)}s`,
+        );
+        await new Promise((r) => setTimeout(r, backoff));
+      } else {
+        console.error(`${tag} error: ${err.message}. Giving up after ${MAX_ATTEMPTS} attempts`);
+      }
     }
   }
-
-  if (utterances.length) {
-    // Resolve clip-relative MM:SS into absolute seconds here, so the mapper
-    // never has to do timestamp arithmetic by hand.
-    let dropped = 0;
-    const enriched = utterances.flatMap((u: any) => {
-      const startSec = clipTimeToSeconds(u.start);
-      const endSec = clipTimeToSeconds(u.end);
-      if (startSec === null) {
-        dropped++;
-        return [];
-      }
-      const safeEnd = endSec !== null && endSec >= startSec ? endSec : startSec;
-      return [
-        {
-          ...u,
-          start_sec: startSec,
-          end_sec: safeEnd,
-          abs_start: chunk.audio_start + startSec,
-          abs_end: chunk.audio_start + safeEnd,
-          duration: Math.round((safeEnd - startSec) * 10) / 10,
-        },
-      ];
-    });
-
-    // Sums of tenths accumulate float noise; keep the stored totals to 0.1s.
-    const tenth = (x: number) => Math.round(x * 10) / 10;
-    const speechSec = tenth(
-      enriched.reduce((acc: number, u: any) => acc + u.duration, 0),
-    );
-    const foreignSec = tenth(
-      enriched
-        .filter((u: any) => u.language && u.language.trim() !== "한국어")
-        .reduce((acc: number, u: any) => acc + u.duration, 0),
-    );
-
-    const out = {
-      chunk_id: chunk.chunk_id,
-      scene: chunk.scene,
-      audio_start: chunk.audio_start,
-      marker_range: [chunk.start_sec, chunk.end_sec],
-      markers: chunk.marker_indices,
-      speech_sec: speechSec,
-      foreign_speech_sec: foreignSec,
-      utterances: enriched,
-    };
-
-    fs.writeFileSync(outFile, JSON.stringify(out, null, 2), "utf-8");
-    console.error(
-      `  ✓ Saved ${outFile} (${enriched.length} utterances, ${formatTimestamp(Math.round(foreignSec))} foreign speech${dropped ? `, ${dropped} dropped` : ""})`,
-    );
-  } else {
-    console.error(`  ✗ No output for ${chunk.chunk_id}`);
-  }
-
-  // Rate limit between calls
-  if (i < plan.chunks.length - 1) {
-    await new Promise((r) => setTimeout(r, 2000));
-  }
+  return [];
 }
 
-console.error(`\nDone. Results in ${outDir}/`);
+async function runJob(job: { pass: string; chunk: any }): Promise<void> {
+  const { pass, chunk } = job;
+  const tag = `[${pass} ${chunk.chunk_id}]`;
+  const outFile = path.join(baseDir, pass, `${chunk.chunk_id}.json`);
+  if (hasResult(outFile)) {
+    console.error(`${tag} already done, skipping`);
+    return;
+  }
+  console.error(`${tag} STT (${chunk.scene}, ${chunk.markers.length} markers)`);
+
+  const utterances = await transcribe(chunk, tag);
+  if (!utterances.length) {
+    console.error(`${tag} ✗ no output`);
+    return;
+  }
+
+  // Resolve clip-relative MM:SS into absolute seconds here, so the mapper
+  // never has to do timestamp arithmetic by hand.
+  let dropped = 0;
+  const enriched = utterances.flatMap((u: any) => {
+    const startSec = clipTimeToSeconds(u.start);
+    const endSec = clipTimeToSeconds(u.end);
+    if (startSec === null) {
+      dropped++;
+      return [];
+    }
+    const safeEnd = endSec !== null && endSec >= startSec ? endSec : startSec;
+    return [
+      {
+        ...u,
+        start_sec: startSec,
+        end_sec: safeEnd,
+        abs_start: chunk.audio_start + startSec,
+        abs_end: chunk.audio_start + safeEnd,
+        duration: Math.round((safeEnd - startSec) * 10) / 10,
+      },
+    ];
+  });
+
+  // Sums of tenths accumulate float noise; keep the stored totals to 0.1s.
+  const tenth = (x: number) => Math.round(x * 10) / 10;
+  const speechSec = tenth(enriched.reduce((acc: number, u: any) => acc + u.duration, 0));
+  const foreignSec = tenth(
+    enriched
+      .filter((u: any) => u.language && u.language.trim() !== "한국어")
+      .reduce((acc: number, u: any) => acc + u.duration, 0),
+  );
+
+  const out = {
+    chunk_id: chunk.chunk_id,
+    scene: chunk.scene,
+    audio_start: chunk.audio_start,
+    marker_range: [chunk.start_sec, chunk.end_sec],
+    markers: chunk.marker_indices,
+    speech_sec: speechSec,
+    foreign_speech_sec: foreignSec,
+    utterances: enriched,
+  };
+
+  // Write to a temp name and rename, so a run that is killed mid-write never
+  // leaves a half file that a later run would accept.
+  fs.writeFileSync(`${outFile}.tmp`, JSON.stringify(out, null, 2), "utf-8");
+  fs.renameSync(`${outFile}.tmp`, outFile);
+  console.error(
+    `${tag} ✓ ${enriched.length} utterances, ${formatTimestamp(Math.round(foreignSec))} foreign speech${dropped ? `, ${dropped} dropped` : ""}`,
+  );
+}
+
+const jobs = passNames.flatMap((pass) => plan.chunks.map((chunk: any) => ({ pass, chunk })));
+console.error(
+  `STT: ${plan.chunks.length} chunks × ${passNames.length} pass(es) = ${jobs.length} jobs, ` +
+    `${Number.isFinite(CONCURRENCY) ? CONCURRENCY : "all"} at a time, up to ${MAX_ATTEMPTS} attempts each`,
+);
+await pool(jobs, CONCURRENCY, runJob);
+
+const missing = jobs.filter(
+  (j) => !hasResult(path.join(baseDir, j.pass, `${j.chunk.chunk_id}.json`)),
+);
+for (const pass of passNames) {
+  const miss = missing.filter((j) => j.pass === pass).map((j) => j.chunk.chunk_id);
+  console.error(
+    `${pass}: ${plan.chunks.length - miss.length}/${plan.chunks.length}${miss.length ? ` — missing ${miss.join(", ")}` : ""}`,
+  );
+}
+if (missing.length) {
+  console.error("Run the same command again to retry the missing chunks.");
+  process.exit(1);
+}
+console.error("Done.");

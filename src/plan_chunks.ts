@@ -163,3 +163,32 @@ const output = {
 const outPath = path.join(baseDir, "chunks_plan.json");
 await Bun.write(outPath, JSON.stringify(output, null, 2));
 console.error(`\nWrote ${outPath} (${allChunks.length} chunks)`);
+
+// A TC past the end of the media is a typo in the script (1028 had "136623",
+// read as 13:66:23 in a 4-hour video). Its chunk would be cut from silence, and
+// Gemini rejects the empty upload with a bare 400. Report it here, before step 2.
+const probe = Bun.spawnSync([
+  "ffprobe", "-v", "error", "-show_entries", "format=duration",
+  "-of", "default=nw=1:nk=1", resolvedMp3Path,
+]);
+const mediaSec = parseFloat(probe.stdout.toString());
+if (Number.isFinite(mediaSec)) {
+  const late = markers.filter((m) => m.timestamp > mediaSec);
+  if (late.length) {
+    console.error(
+      `\nWARNING: ${late.length} marker(s) have a TC past the end of the media (${formatTimestamp(Math.round(mediaSec))}):`,
+    );
+    for (const m of late) {
+      const chunk = allChunks.find((c) => c.marker_indices.includes(m.index));
+      console.error(
+        `  marker ${m.index} ${m.charName} ${formatTimestamp(m.timestamp)} "${m.rawText}" (chunk ${chunk?.chunk_id})`,
+      );
+    }
+    console.error(
+      `Fix these in chunks_plan.json before extracting (see "TC past the end of the video" in CLAUDE.md).`,
+    );
+    process.exitCode = 2;
+  }
+} else {
+  console.error(`(could not read media duration with ffprobe; TC range not checked)`);
+}

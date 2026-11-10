@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { formatTimestamp } from "./parser";
+import { formatTimestamp, LANG_NAME } from "./parser";
 import type { Translation } from "./translate";
 
 // Billable minutes for an episode, written to speech_duration.json next to
@@ -39,8 +39,6 @@ if (!planPath || !["A", "B", "C"].includes(RULE)) {
   console.error("Usage: bun src/speech_duration.ts <hwpx-dir>/chunks_plan.json [--prefix stt_results] [--rule A|B|C]");
   process.exit(1);
 }
-
-const LANG_NAME: Record<string, string> = { 영: "영어", 독: "독일어", 오: "독일어", 베: "베트남어" };
 
 const plan = JSON.parse(fs.readFileSync(planPath, "utf-8"));
 const baseDir = path.dirname(path.resolve(planPath));

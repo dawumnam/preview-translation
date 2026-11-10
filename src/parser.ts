@@ -17,6 +17,16 @@ export interface SceneChunk {
   context: string[];
 }
 
+// Script language codes (the "x" in @@(x)) to the language names the STT returns.
+// 오 (Austrian German) is reported by the STT as 독일어.
+export const LANG_NAME: Record<string, string> = {
+  영: "영어",
+  독: "독일어",
+  오: "독일어",
+  베: "베트남어",
+  조: "조지아어",
+};
+
 export function parseTimestamp(ts: string): number {
   ts = ts.trim();
   if (ts.length >= 5) {
@@ -93,7 +103,10 @@ export function parseMarkers(xml: string, boldIds?: Set<string>): {
         const fullClean = cleanSegments.filter(Boolean).join(" ");
 
         // Scene header
-        if (fullClean.match(/^#\s/)) {
+        // "# 하차프리 식당" and "#케이블카" are both scene headers: writers do not
+        // always put a space after #. With /^#\s/ the 1104 cable-car scene went
+        // unseen and its markers were filed under the scene listed before it.
+        if (fullClean.match(/^#(?!#)\s*\S/)) {
           currentScene = fullClean.replace(/^#\s*/, "").trim();
           if (!sceneMap.has(currentScene)) {
             sceneMap.set(currentScene, {
@@ -180,10 +193,16 @@ export function parseMarkers(xml: string, boldIds?: Set<string>): {
               }
               const scene = sceneMap.get(currentScene)!;
               scene.markers.push(marker);
+              scene.context.push(`${fullClean} [marker ${marker.index}]`);
               const end = endTimestamp || currentTimestamp;
               scene.startTime = Math.min(scene.startTime, currentTimestamp);
               scene.endTime = Math.max(scene.endTime, end);
             }
+          } else if (currentScene && sceneMap.has(currentScene)) {
+            // A non-bold @@ line is not translated, but it still takes a turn
+            // in the exchange. Keep it in the context so a mapper does not
+            // give its speech to a neighbouring bold marker.
+            sceneMap.get(currentScene)!.context.push(`${fullClean} [not requested]`);
           }
           continue;
         }

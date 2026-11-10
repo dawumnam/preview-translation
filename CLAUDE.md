@@ -33,8 +33,8 @@ All intermediate outputs are written next to the input HWPX file (not CWD). Path
 2. EXTRACT   bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json
               → <hwpx-dir>/chunks/ + <hwpx-dir>/chunks_uploaded.json
 
-3. STT       bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json [stt_results_N]
-              → <hwpx-dir>/stt_results/*.json   (run 3–5 passes: stt_results_2, _3, ...)
+3. STT       bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json --passes 3
+              → <hwpx-dir>/stt_results{,_2,_3}/*.json   (all chunks × passes at once)
 
 3b. MERGE STT bun src/merge_stt.ts <hwpx-dir>/chunks_plan.json
               → <hwpx-dir>/stt_results_merged/*.json   (union of all passes)
@@ -55,6 +55,24 @@ All intermediate outputs are written next to the input HWPX file (not CWD). Path
 Steps 2-3 support resume: already-extracted chunks and STT results are skipped on re-run.
 Step 4 supports resume: chunks with existing `translations/<chunk_id>.json` are skipped on re-run.
 
+### Run everything as wide as it goes
+
+Every step that calls Gemini or spawns agents runs all its work at the same time by default. Do not run chunks or passes one after another.
+
+- **Extract (step 2):** all chunks are extracted and uploaded in parallel, one ffmpeg job per CPU core (`EXTRACT_CONCURRENCY` overrides). ffmpeg seeks with `-ss` before `-i`, so a chunk at 3h into a 4h mp4 takes seconds, not a decode from the start. Output is written to a temp name first, so an interrupted run leaves no short file behind.
+- **STT (step 3):** `--passes 3` runs every (pass, chunk) pair at once, e.g. 21 chunks × 3 passes = 63 calls in flight. On 1028 the old sequential loop took about 2.5 min per chunk per pass, so one pass of 21 chunks was close to an hour. `STT_CONCURRENCY` caps the number in flight if Gemini starts answering 429. Each job tries up to `STT_ATTEMPTS` (default 6) times with backoff and jitter. The run ends with a per-pass list of missing chunks and exits 1 if any are missing; run the same command again and it only redoes those.
+- **Episodes:** several episodes run side by side, each in its own work directory (see "Multi-file parallel processing"). Start each episode's next step as soon as its previous step ends; do not wait for the other episodes.
+- **Map (step 4):** start a chunk's mapper as soon as its merged STT exists, up to the 20-agent cap, across all episodes. Do not hold back one episode's mappers until another episode's STT is done.
+
+### Blocked chunks
+
+Gemini sometimes blocks an STT request with `promptFeedback.blockReason: "OTHER"` and an empty response. The block is random for most chunks, and the retries get through. On 1028 one 5-minute chunk (05ba) was blocked on 11 tries in a row, and the block followed one part of its audio: the first half went through on every pass, and the second half was always blocked. When a chunk stays blocked after a full run:
+
+1. Make a separate work directory with a copy of the `.hwpx` (outputs go next to `hwpx_path`) and a `chunks_plan.json` whose chunks are pieces of the blocked one: same `markers` and `context`, new `chunk_id` (e.g. `05baA`), and an `audio_start`/`audio_end` window of 1.5–3 min, overlapping its neighbour by 10–20 s.
+2. Run `extract_chunks.ts` and `stt_chunks.ts --passes 3` on it.
+3. Join the pieces back into `stt_results*/<chunk_id>.json` for each missing pass: keep each piece's utterances between the midpoints of its overlaps, recompute `start_sec`/`end_sec` against the chunk's own `audio_start`, and sort by `abs_start`. Keep any pass that already has the full chunk.
+4. Run `merge_stt.ts` and the chunk's mapper as usual.
+
 Step 5 also normalises mapper text: it decodes XML entities (`&lt;서유기&gt;` → `<서유기>`, since `replace.ts` escapes on insert and pre-escaped text renders literally) and drops ` / ` utterance joins, warning with a count when it had to.
 
 Step 7 is the check before delivery. It reads the output back and confirms: the zip is readable (adm-zip and `unzip -t`), every XML part is well-formed, every bold marker has its translation in order with the right speaker/language, no line was added and each line's TC and speaker are unchanged from the script, low-confidence lines carry `??`, no text is double-escaped or slash-joined, and non-bold `@@` lines and all other script text are byte-identical to the source.
@@ -71,6 +89,7 @@ The orchestrator handles this directly (no skill needed):
 The `mapper` agent (`.claude/agents/mapper.md`) processes a single chunk:
 - Reads its own data files (chunks_plan.json + stt_results) — orchestrator does not pre-read them
 - Reads markers + STT transcript together — no timestamp arithmetic needed (`abs_start` is pre-resolved)
+- Reads the scene `context`, where every `@@` line sits in place, tagged `[marker N]` (bold, requested) or `[not requested]` (non-bold). Before 2026-11-01 the context dropped all `@@` lines, and on 1022 (Georgia, about as many non-bold `@@` lines as bold ones) a mapper put speech that belonged to unrequested lines into requested ones.
 - Uses STT-provided Korean translations as a starting point
 - Improves translations using surrounding Korean dialogue context
 - Writes one translation per marker — no splitting, no new TCs (see "TCs are fixed")
@@ -129,7 +148,7 @@ and the tenths figure was repeatable to 0.1% across passes. Against an ffmpeg
 `silencedetect` bound Gemini never exceeds the acoustic non-silence, so it does
 not pad beyond that; snapping block edges to real sound/silence transitions
 moved the total −3%, consistent with the tenths result. For a billable figure
-run `stt_chunks.ts` two extra times into `stt_results_2` and `stt_results_3`;
+run at least three passes (`stt_chunks.ts --passes 3`);
 `speech_duration.ts` averages every `stt_results*` dir it finds and reports the
 spread. Mapping (step 4) reads the union of passes (`stt_results_merged/`), never a single pass.
 
@@ -143,8 +162,8 @@ that chunk: set a larger `audio_end` for it in both `chunks_plan.json` and
 `chunks_uploaded.json`, drop its `uri`/`mimeType` from the latter, delete
 `chunks/<id>.mp3`, `stt_results*/<id>.json` and `stt_results_merged/<id>.json`,
 then run `extract_chunks.ts` on `chunks_uploaded.json` (only that chunk is
-re-extracted and re-uploaded), the STT passes (each skips chunks that already
-have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–7.
+re-extracted and re-uploaded), `stt_chunks.ts --passes 3` (it skips chunks that
+already have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–7.
 
 ## Key files
 
@@ -158,8 +177,8 @@ have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–7.
 | `src/ask.ts` | CLI: thin Gemini caller (stdin prompt → stdout response) |
 | `src/apply.ts` | CLI: apply translations.json → translated HWPX |
 | `src/plan_chunks.ts` | CLI: parse HWPX + compute audio chunks |
-| `src/extract_chunks.ts` | CLI: ffmpeg extract + Gemini upload (supports .mp3 and .mp4 input) |
-| `src/stt_chunks.ts` | CLI: batch STT on uploaded chunks (one pass per run) |
+| `src/extract_chunks.ts` | CLI: ffmpeg extract + Gemini upload, all chunks in parallel (supports .mp3 and .mp4 input) |
+| `src/stt_chunks.ts` | CLI: STT on uploaded chunks; `--passes N` runs every pass × chunk at once |
 | `src/merge_stt.ts` | CLI: union of all STT passes → stt_results_merged/ (mapper + billing input) |
 | `src/merge_translations.ts` | CLI: merge per-chunk translations → translations.json |
 | `src/speech_duration.ts` | CLI: sum measured foreign-speech minutes from stt_results (billing) |
@@ -184,9 +203,11 @@ Each translation goes on its marker's own line, under the TC the scriptwriter ty
 - Timestamps in marker data are seconds from start of audio
 - Audio chunks: ≤5 min each, 60s leading buffer, 60s trailing buffer
 - Chunk filenames must be ASCII (Gemini upload header restriction)
-- Language codes: 영=English, 독=German, 오=Austrian German (other codes may appear depending on the episode)
+- Language codes: 영=English, 독=German, 오=Austrian German, 베=Vietnamese, 조=Georgian (`LANG_NAME` in `parser.ts`; other codes may appear depending on the episode)
 - Recurring cast: 큐=QU, 피=PD, 코=coordinator, 카/카감=camera director
 - Other character abbreviations (검여, 검남, 수남, etc.) are episode-specific
+- A scene header is a line that starts with `#`, with or without a space (`# 하차프리 식당`, `#케이블카`). Some scripts open with a table of contents that repeats the headers; it holds no `@@` lines and is harmless.
+- A TC past the end of the video is a typo (1028: `136623`, 13:66:23 in a 4-hour video). Do not change the document. In `chunks_plan.json` and `chunks_uploaded.json`, set that chunk's markers to the TC that lies between the neighbouring markers, add a `hint` that explains it, widen `audio_start`/`audio_end` to cover both neighbours, and re-extract the chunk. `plan_chunks.ts` checks every TC against the media duration (ffprobe), lists the markers past the end with their chunk, and exits 2; fix those before step 2.
 
 ## Pre-flight checklist
 
@@ -213,10 +234,8 @@ The Agent tool has no per-agent permission mode; a mapper inherits the session's
 
 ```bash
 bun src/plan_chunks.ts "<script>.hwpx" <audio>.mp3   # or .mp4
-bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json
-bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json
-bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_2   # billing only: two extra passes
-bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json stt_results_3
+bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json                 # all chunks in parallel
+bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json --passes 3       # 3 passes × all chunks at once; re-run if it exits 1
 bun src/merge_stt.ts <hwpx-dir>/chunks_plan.json                       # union of passes → stt_results_merged/
 # step 4: orchestrator spawns mapper agents (≤20 at once) → translations/<chunk_id>.json
 bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
