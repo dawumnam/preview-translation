@@ -11,7 +11,7 @@ Translator for Korean variety show production scripts. The input is a script (`.
 ## Run
 
 ```bash
-bun src/run.ts "<script>.hwp" <video>.mp4                    # one episode, about 1 minute
+bun src/run.ts "<script>.hwp" <video>.mp4                    # one episode, 1 to 2 minutes
 bun src/run.ts a.hwp a.mp4 b.hwp b.mp4 c.hwp c.mp4            # several episodes at the same time
 ```
 
@@ -63,16 +63,20 @@ Each choice below was measured on the eight Georgia episodes of October and Nove
 | Question | Result |
 |---|---|
 | Which model hears Georgian best? (blind, short clips, 80 lines) | `gemini-4-argon` 0.89–0.90 at any thinking level, 8 s for each call. `gemini-3.8-flash`: LOW 0.84 (6 s), MEDIUM 0.84 (12 s), HIGH 0.89 (34 s median, 127 s at the 90th percentile, 5,400 thinking tokens for a 10-second clip). `gemini-3.1-pro-preview` 0.80–0.81. |
-| Does more thinking help? | Not for Argon: script-guided LOW / MEDIUM / HIGH = 0.909 / 0.918 / 0.916. The old pipeline needed HIGH because it used Flash. |
-| Transcribe everything and map later, or fill the script lines directly? | One script-guided pass scores 0.92 with the answer keys hidden. The earlier deliveries (3 × full STT, mapper agents, probes, review) score 0.92 with the answer keys visible. The guided pass returns only the requested lines, so a call takes 15 s and not 3 minutes. |
+| Transcribe everything and map later, or fill the script lines directly? | The complete new method scores 0.891 on the 233 benchmark lines with the answer keys hidden. The earlier deliveries (3 × full STT, mapper agents, probes, review) score 0.901 with the answer keys visible. The difference is 4 lines, inside the noise of the measurement (one pass of the same settings gave 0.87 to 0.91 in eight runs). A guided call returns only the requested lines, so it takes 15 s and not 3 minutes. |
+| Which model for the guided pass? | `gemini-4-argon` 0.87–0.91; `gemini-3.8-flash` 0.85 (LOW 0.852, MEDIUM 0.845), and Flash had windows blocked (`blockReason: OTHER`) where Argon had none. |
+| Does more thinking help? | Not for Argon: LOW / MEDIUM / HIGH = 0.901 / 0.87–0.91 / 0.908, and HIGH takes twice the time. The old pipeline needed HIGH because it used Flash. |
+| Are the lines placed on the right turn? | Checked against the script with no model: the speech of a line must lie between the TCs around it. In every episode the new method has as many lines inside `[tcPrev − 5 s, tcNext + 5 s]` as the earlier deliveries, or more (0902: 113 of 113 against 109). Where the two put a line on different audio and the TCs can decide, the new one was inside the bounds 5 times and the old one 0 times. |
 | Is a dedicated STT model better? | `gemini-3.5-transcribe` is fast (6 s for 2 minutes) and gives exact word times for the Korean speech, but it did not transcribe the quiet Georgian lines at all. Not used. |
 | Left channel, right channel or both? | The two channels carry different microphones, but one channel alone was not better (0.86 / 0.86 against 0.90 for the mix). |
-| Short clips or long windows? | Windows of 60 s and 180 s were not worse than clips cut tight around the line. The window size is set by the script's TCs, not by hearing. |
+| Does audio filtering help the quiet lines? | No: `dynaudnorm` 0.88 and `speechnorm` 0.90 against 0.91 without a filter (blind test). |
+| Short or long windows? | No measurable difference: 45 s / 60 s / 100 s windows score 0.886 / 0.897 / 0.908, and shorter windows cost more because they overlap more. |
+| Should the model list all turns of the window before it fills the lines? | No. It placed every line of 0902 on the same audio as without the list, and the listening took twice as long. |
 | Does the model's own confidence mean anything? | No. It said "high" for 922 of 949 lines. |
-| Does agreement between listens mean anything? | Yes. On a repeat run, a line that was "high" in both runs came out the same in 98.3% of cases. A line that was not "high" came out different in 36% of cases. |
+| Does agreement between listens mean anything? | Yes. On a repeat run of the complete method, a line that was "high" in both runs came out the same in 97–98% of cases. A "medium" line came out different in about 20% of cases, and a "low" line in most cases. More listens do not make those lines stable: the audio is ambiguous there (overlapping speech, a quiet aside). The flag tells the editor where to look. |
 | Does video help to tell the locals apart? | Not at 2 frames per second and low resolution: the speaker assignment did not become more stable. Not used. |
 
-Time, for episode 1104 (96 markers, 2 h 33 min video): 22 minutes on 10 November with the old pipeline run as wide as possible; about 1 minute now. For 1103 (166 markers): 36 minutes then. The eight episodes together run in 4 to 5 minutes. Cost is about 1.2 USD for each episode at the November 2026 price of `gemini-4-argon`; the old pipeline spent more than that on Flash thinking tokens alone.
+Time for one episode alone: 67 s and 128 s for 1104 in two runs (96 lines, 2 h 33 min video; 22 minutes on 10 November with the old pipeline run as wide as possible), 83 s for 0902 (113 Vietnamese lines). The time is one brief call (15 to 20 s) plus the slowest listening call, plus the focused listens (10 to 30 s), and it goes up when the model service is busy. The eight Georgia episodes together run in 4 to 6 minutes; 1103 alone took 36 minutes before. Cost is 0.7 to 2 USD for an episode at the November 2026 price of `gemini-4-argon` (the price doubles on 1 December 2026); the old pipeline spent more than that on Flash thinking tokens alone.
 
 ## Confidence
 
@@ -83,7 +87,7 @@ Time, for episode 1104 (96 markers, 2 h 33 min video): 22 minutes on 10 November
 | low | Fewer than 3 listens agree, or only one heard the line | text + ` ??` |
 | low, not heard | No listen heard the line | `(들리지 않음) ??` |
 
-Typical counts: 85–90% high, 5–10% medium, 2–6% low. Scenes with several locals who speak in quick turns give the most medium and low lines.
+On the eight Georgia episodes: 89% high, 8.5% medium, 2.3% low (22 of 949 lines; 0 to 8 for an episode). Scenes with several locals who speak in quick turns give the most medium and low lines.
 
 ## After the run
 
@@ -107,7 +111,7 @@ Each translation goes on its marker's own line, under the TC the scriptwriter ty
 
 **What counts: the audio each translation was written from.** Each line has `speech_start` / `speech_end` in `translations.json`: the span of the turn that the chosen listen reported. The billable figure is the union of those spans for lines with confidence high or medium, counted once where spans overlap. A ` ??` line is not billed; the run prints how many seconds those lines would add, so they can be added by hand after an editor confirms them. The figure is in the run output and in `<work-dir>/speech_duration.json`.
 
-The spans are model output in tenths of a second, not an acoustic measurement. Two runs of the same episode differ by 1–3%. Against the earlier deliveries the new figure is 98.5% in total over the eight Georgia episodes (0.94 to 1.05 for one episode).
+The spans are model output in tenths of a second, not an acoustic measurement. Two runs of the same episode differ by 1–3%. Against the earlier deliveries the new figure is 97% in total over the eight Georgia episodes (7,508 s against 7,732 s; 0.89 to 1.05 for one episode). Part of the difference is the ` ??` lines, which the earlier figure included.
 
 ## Key files
 

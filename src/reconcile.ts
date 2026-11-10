@@ -1,11 +1,12 @@
 // Decide each marker from independent listens.
 //
 // The model's own "confidence" does not separate right from wrong (on 949
-// markers it said "high" for 922). Agreement between independent listens does:
-// on the 232 benchmark lines, 92% were right when two passes agreed closely
-// and about 72% when they did not. So confidence here is a count of listens
-// that agree, and a line is flagged (" ??" in the document) only when no two
-// listens agree.
+// markers it said "high" for 922). Agreement between independent listens does.
+// On a repeat run of the whole pipeline, a line whose two passes agreed came
+// out the same in 97-98% of cases; a line whose passes differed came out
+// different in 20% of cases or more. So confidence here is a count of listens
+// that agree, and a line is flagged (" ??" in the document) when fewer than
+// three of five listens agree.
 import { callJson } from "./llm";
 import type { Candidate } from "./listen";
 

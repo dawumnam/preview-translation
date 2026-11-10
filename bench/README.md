@@ -9,11 +9,15 @@ There is no human reference translation. But the scripts state the content of ma
 - **A:** a local's `@@` line that is directly followed by the coordinator's Korean interpretation (`코 30년 됐대요`).
 - **B:** the coordinator's `@@` line that directly follows a Korean question from the director or the host.
 
-That Korean line is the answer key. For a benchmark run, the pipeline gets the script with those lines hidden, so it cannot copy them. A text model then grades each translation against its answer key: 2 = same content, 1 = same topic, 0 = unrelated. Each line gets three judge votes and the middle value counts, because one vote is noisy.
+That Korean line is the answer key. For a benchmark run, the pipeline gets the script with those lines hidden, so it cannot copy them. A text model then grades each translation against its answer key: 2 = same content, 1 = same topic, 0 = unrelated. Each line gets three judge votes and the middle value counts, because one vote is noisy (the same text can get 1 or 2).
 
-The eight Georgia episodes of October and November 2026 give 232 such lines out of 949.
+The eight Georgia episodes of October and November 2026 give 233 such lines out of 949.
 
-The score has a ceiling below 1.0. The interpreter summarises, and for some lines the Korean line next to the marker is about a different turn. On these episodes the best of four runs reached 0.96.
+Read the score with these limits in mind:
+
+- **It has a ceiling below 1.0.** The interpreter summarises, and for some lines the Korean line next to the marker is about a different turn. The best of four runs, line by line, reached 0.96.
+- **It penalises a faithful translation when the interpreter changed the content.** Example: the host asks "there is no supermarket near here, is that not hard?", the coordinator says in Georgian only "is there a market near here at all?", and the correct translation of the coordinator's line scores 1.
+- **One run is noisy.** Eight single passes with the same settings scored 0.87 to 0.91. A difference of less than 0.02 between two runs means nothing; run twice.
 
 ## Setup
 
@@ -36,14 +40,17 @@ bun bench/bench.ts compare <a> <b>         # same / detail / different for each 
 
 `compare` of two runs of the same code is the repeatability check: a line that comes out different on a second run was not heard reliably. Use `compare <name> delivered` to see how far a run is from an earlier delivery.
 
-A full run of the eight episodes costs about 10 USD at the November 2026 price of `gemini-4-argon` and takes 4 to 5 minutes.
+A full run of the eight episodes costs about 11 USD at the November 2026 price of `gemini-4-argon` and takes 4 to 6 minutes.
 
-## Reference results (10 November 2026)
+## Reference results (10 November 2026, three-vote judge, 233 lines)
 
-| Method | Score (232 lines) | Notes |
+| Method | Score | Notes |
 |---|---|---|
-| Earlier deliveries (3 × STT at HIGH thinking, mapper agents, probes, review) | 0.916 | made with the answer keys visible |
-| One script-guided pass, `gemini-4-argon` | 0.91–0.92 | thinking LOW/MEDIUM/HIGH: 0.909 / 0.918 / 0.916 |
-| One script-guided pass, `gemini-3.8-flash` | 0.86–0.88 | LOW 0.869, MEDIUM 0.875 |
+| Earlier deliveries (3 × STT at HIGH thinking, mapper agents, probes, review) | 0.901 | made with the answer keys visible |
+| Complete new method (two passes, focused listens, brief) | 0.891 | answer keys hidden; high lines 85% full score, medium lines 58% |
+| One script-guided pass, `gemini-4-argon` | 0.87–0.91 | eight runs; thinking LOW 0.901, MEDIUM 0.87–0.91, HIGH 0.908; windows of 45 / 60 / 100 s: 0.886 / 0.897 / 0.908 |
+| One script-guided pass, `gemini-3.8-flash` | 0.85 | LOW 0.852, MEDIUM 0.845 |
 
-Blind listening on short clips (80 lines, no script shown): `gemini-4-argon` 0.89–0.90, `gemini-3.8-flash` LOW 0.84, MEDIUM 0.84, HIGH 0.89, `gemini-3.1-pro-preview` 0.80–0.81. `gemini-3.5-transcribe` gave exact word times for Korean speech but did not transcribe the quiet Georgian lines.
+`compare` results: the complete method against the earlier deliveries: 69% same, 21% detail, 10% different. Two runs of the complete method against each other: 7 to 9% different, nearly all on lines that are not "high" in both runs.
+
+A separate blind test (80 lines, short clips, no script shown, one judge vote): `gemini-4-argon` 0.89–0.90, `gemini-3.8-flash` LOW 0.84, MEDIUM 0.84, HIGH 0.89, `gemini-3.1-pro-preview` 0.80–0.81. `gemini-3.5-transcribe` gave exact word times for Korean speech but did not transcribe the quiet Georgian lines.

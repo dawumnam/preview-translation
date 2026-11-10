@@ -257,7 +257,7 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
       "c",
     );
     // More thinking did not make the model hear better (Argon low/medium/high:
-    // 0.909/0.918/0.916 on the benchmark), so the focused listens keep the
+    // 0.90/0.89/0.91 on the benchmark), so the focused listens keep the
     // level of the passes. What they add is a closer window, the settled
     // neighbours as fixed points, and three more independent hearings.
     const rcs = await timed("focused", () =>
