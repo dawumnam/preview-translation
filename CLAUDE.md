@@ -60,13 +60,14 @@ Step 4 supports resume: chunks with existing `translations/<chunk_id>.json` are 
 Every step that calls Gemini or spawns agents runs all its work at the same time by default. Do not run chunks or passes one after another.
 
 - **Extract (step 2):** all chunks are extracted and uploaded in parallel, one ffmpeg job per CPU core (`EXTRACT_CONCURRENCY` overrides). ffmpeg seeks with `-ss` before `-i`, so a chunk at 3h into a 4h mp4 takes seconds, not a decode from the start. Output is written to a temp name first, so an interrupted run leaves no short file behind.
-- **STT (step 3):** `--passes 3` runs every (pass, chunk) pair at once, e.g. 21 chunks × 3 passes = 63 calls in flight. On 1028 the old sequential loop took about 2.5 min per chunk per pass, so one pass of 21 chunks was close to an hour. `STT_CONCURRENCY` caps the number in flight if Gemini starts answering 429. Each job tries up to `STT_ATTEMPTS` (default 6) times with backoff and jitter. The run ends with a per-pass list of missing chunks and exits 1 if any are missing; run the same command again and it only redoes those.
+- **STT (step 3):** `--passes 3` runs every (pass, chunk) pair at once, e.g. 21 chunks × 3 passes = 63 calls in flight. On 1028 the old sequential loop took about 2.5 min per chunk per pass, so one pass of 21 chunks was close to an hour. `STT_CONCURRENCY` caps the number in flight if Gemini starts answering 429. Each job tries up to `STT_ATTEMPTS` (default 6) times with backoff and jitter, or `STT_BLOCK_ATTEMPTS` (default 12) when Gemini blocks the request (see "Blocked chunks"). The run ends with a per-pass list of missing chunks and exits 1 if any are missing; run the same command again and it only redoes those. `--only <id>[,<id>…]` limits a run to those chunks, so you can redo one chunk while another run is still busy with a different chunk.
+- **Truncated passes:** a pass can end with `finishReason: STOP` and valid JSON, but stop part way through the clip. On 1103 passes 2 and 3 of 01bbba stopped at 1:34 of a 3:34 clip (18 and 16 utterances, against 60), and nothing reported it. After all jobs end, `stt_chunks.ts` compares the passes of each chunk (`src/stt_coverage.ts`). If a pass ends more than 30 s before another pass, and that pass has 5 or more utterances after that point, the result moves to `<id>.json.truncated` and the job runs one more time. If the new result is also cut off, it counts as missing. `merge_stt.ts` does the same check on what it reads, names each file, and exits 1. Delete those files, run `stt_chunks.ts --passes 3 --only <id>`, and then run `merge_stt.ts` again.
 - **Episodes:** several episodes run side by side, each in its own work directory (see "Multi-file parallel processing"). Start each episode's next step as soon as its previous step ends; do not wait for the other episodes.
 - **Map (step 4):** start a chunk's mapper as soon as its merged STT exists, up to the 20-agent cap, across all episodes. Do not hold back one episode's mappers until another episode's STT is done.
 
 ### Blocked chunks
 
-Gemini sometimes blocks an STT request with `promptFeedback.blockReason: "OTHER"` and an empty response. The block is random for most chunks, and the retries get through. On 1028 one 5-minute chunk (05ba) was blocked on 11 tries in a row, and the block followed one part of its audio: the first half went through on every pass, and the second half was always blocked. When a chunk stays blocked after a full run:
+Gemini sometimes blocks an STT request with `promptFeedback.blockReason: "OTHER"` and an empty response. The block is random for most chunks, and the retries get through. On 1028 one 5-minute chunk (05ba) was blocked on 11 tries in a row, and the block followed one part of its audio: the first half went through on every pass, and the second half was always blocked. On 1103 chunk 01bbbb was blocked on 8 tries and went through on the 9th, so a blocked request now gets 12 tries (`STT_BLOCK_ATTEMPTS`) and not 6. When a chunk is still missing after a full run, run the same command again (the next run has 12 more tries). At the same time, start the split below, because you cannot know which of the two gets through first. Use the split only if the retry fails:
 
 1. Make a separate work directory with a copy of the `.hwpx` (outputs go next to `hwpx_path`) and a `chunks_plan.json` whose chunks are pieces of the blocked one: same `markers` and `context`, new `chunk_id` (e.g. `05baA`), and an `audio_start`/`audio_end` window of 1.5–3 min, overlapping its neighbour by 10–20 s.
 2. Run `extract_chunks.ts` and `stt_chunks.ts --passes 3` on it.
@@ -162,8 +163,8 @@ that chunk: set a larger `audio_end` for it in both `chunks_plan.json` and
 `chunks_uploaded.json`, drop its `uri`/`mimeType` from the latter, delete
 `chunks/<id>.mp3`, `stt_results*/<id>.json` and `stt_results_merged/<id>.json`,
 then run `extract_chunks.ts` on `chunks_uploaded.json` (only that chunk is
-re-extracted and re-uploaded), `stt_chunks.ts --passes 3` (it skips chunks that
-already have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–7.
+re-extracted and re-uploaded), `stt_chunks.ts --passes 3 --only <id>`,
+`merge_stt.ts`, one mapper for that chunk, and steps 5–7.
 
 ## Key files
 
@@ -178,7 +179,8 @@ already have output), `merge_stt.ts`, one mapper for that chunk, and steps 5–7
 | `src/apply.ts` | CLI: apply translations.json → translated HWPX |
 | `src/plan_chunks.ts` | CLI: parse HWPX + compute audio chunks |
 | `src/extract_chunks.ts` | CLI: ffmpeg extract + Gemini upload, all chunks in parallel (supports .mp3 and .mp4 input) |
-| `src/stt_chunks.ts` | CLI: STT on uploaded chunks; `--passes N` runs every pass × chunk at once |
+| `src/stt_chunks.ts` | CLI: STT on uploaded chunks; `--passes N` runs every pass × chunk at once; `--only <ids>` limits it to some chunks |
+| `src/stt_coverage.ts` | `findTruncated()` — finds a pass that stops long before another pass of the same chunk (used by `stt_chunks.ts` and `merge_stt.ts`) |
 | `src/merge_stt.ts` | CLI: union of all STT passes → stt_results_merged/ (mapper + billing input) |
 | `src/merge_translations.ts` | CLI: merge per-chunk translations → translations.json |
 | `src/speech_duration.ts` | CLI: sum measured foreign-speech minutes from stt_results (billing) |
@@ -236,7 +238,7 @@ The Agent tool has no per-agent permission mode; a mapper inherits the session's
 bun src/plan_chunks.ts "<script>.hwpx" <audio>.mp3   # or .mp4
 bun src/extract_chunks.ts <hwpx-dir>/chunks_plan.json                 # all chunks in parallel
 bun src/stt_chunks.ts <hwpx-dir>/chunks_uploaded.json --passes 3       # 3 passes × all chunks at once; re-run if it exits 1
-bun src/merge_stt.ts <hwpx-dir>/chunks_plan.json                       # union of passes → stt_results_merged/
+bun src/merge_stt.ts <hwpx-dir>/chunks_plan.json                       # union of passes → stt_results_merged/; exits 1 if a pass is truncated
 # step 4: orchestrator spawns mapper agents (≤20 at once) → translations/<chunk_id>.json
 bun src/merge_translations.ts <hwpx-dir>/chunks_plan.json
 bun src/apply.ts "<script>.hwpx" <hwpx-dir>/translations.json

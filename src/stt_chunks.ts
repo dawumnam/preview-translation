@@ -3,6 +3,7 @@ import path from "path";
 import { ThinkingLevel, Type } from "@google/genai";
 import { getGeminiClient } from "./gemini";
 import { formatTimestamp, LANG_NAME } from "./parser";
+import { findTruncated } from "./stt_coverage";
 
 const MODEL = "gemini-3.8-flash";
 // Caps runaway output (see pre-flight checklist), but must also cover thinking
@@ -16,34 +17,62 @@ const MAX_OUTPUT_TOKENS = 65536;
 // Usage:
 //   bun src/stt_chunks.ts <chunks_uploaded.json> --passes 3   (stt_results, _2, _3)
 //   bun src/stt_chunks.ts <chunks_uploaded.json> [out-dir-name=stt_results]
+//   ... --only 01bbba,05ba    only these chunks (the others are not touched)
 // Several passes exist because one pass misses quiet lines that another hears
 // (merge_stt.ts takes the union) and so speech_duration.ts can average them.
 // Every (pass, chunk) job runs at the same time; set STT_CONCURRENCY to cap it.
 const args = process.argv.slice(2);
 const uploadedPath = args[0];
+const USAGE =
+  "Usage: bun src/stt_chunks.ts <chunks_uploaded.json> [--passes N | out-dir-name=stt_results] [--only id1,id2]";
 if (!uploadedPath || uploadedPath.startsWith("--")) {
-  console.error(
-    "Usage: bun src/stt_chunks.ts <chunks_uploaded.json> [--passes N | out-dir-name=stt_results]",
-  );
+  console.error(USAGE);
   process.exit(1);
 }
-const passesFlag = args.indexOf("--passes");
+const flagValue = (name: string): string | undefined => {
+  const i = args.indexOf(name);
+  if (i < 0) return undefined;
+  const v = args[i + 1];
+  if (!v || v.startsWith("--")) {
+    console.error(`${name} needs a value. ${USAGE}`);
+    process.exit(1);
+  }
+  return v;
+};
+const passesValue = flagValue("--passes");
+const onlyValue = flagValue("--only");
+const flagArgs = new Set(["--passes", passesValue, "--only", onlyValue]);
+const positional = args.slice(1).filter((a) => !flagArgs.has(a));
 const passNames: string[] =
-  passesFlag >= 0
-    ? Array.from({ length: Math.max(1, parseInt(args[passesFlag + 1], 10) || 1) }, (_, k) =>
+  passesValue !== undefined
+    ? Array.from({ length: Math.max(1, parseInt(passesValue, 10) || 1) }, (_, k) =>
         k === 0 ? "stt_results" : `stt_results_${k + 1}`,
       )
-    : [args[1] || "stt_results"];
+    : [positional[0] || "stt_results"];
 
 const CONCURRENCY = parseInt(process.env.STT_CONCURRENCY || "", 10) || Infinity;
+const MAX_ATTEMPTS = parseInt(process.env.STT_ATTEMPTS || "", 10) || 6;
 // Gemini blocks some requests at random (promptFeedback.blockReason=OTHER, an
 // empty response); the same request often goes through on a later try. On 1028
-// one chunk needed 4+ tries in a pass. A chunk that is blocked on every try has
-// to be split into shorter pieces (see CLAUDE.md, "Blocked chunks").
-const MAX_ATTEMPTS = parseInt(process.env.STT_ATTEMPTS || "", 10) || 6;
+// one chunk needed 4+ tries in a pass. On 1103 chunk 01bbbb was blocked on 8
+// tries and went through on the 9th. So a block gets more tries than other
+// errors. A chunk that is blocked on every try has to be split into shorter
+// pieces (see CLAUDE.md, "Blocked chunks").
+const MAX_BLOCK_ATTEMPTS = parseInt(process.env.STT_BLOCK_ATTEMPTS || "", 10) || 12;
 
 const plan = JSON.parse(fs.readFileSync(uploadedPath, "utf-8"));
 const baseDir = path.dirname(path.resolve(plan.hwpx_path));
+
+let chunks: any[] = plan.chunks;
+if (onlyValue !== undefined) {
+  const only = new Set(onlyValue.split(",").map((s) => s.trim()).filter(Boolean));
+  const unknown = [...only].filter((id) => !chunks.some((c) => c.chunk_id === id));
+  if (unknown.length) {
+    console.error(`--only: no chunk with id ${unknown.join(", ")} in ${uploadedPath}`);
+    process.exit(1);
+  }
+  chunks = chunks.filter((c) => only.has(c.chunk_id));
+}
 
 for (const name of passNames) {
   const dir = path.join(baseDir, name);
@@ -161,10 +190,14 @@ function hasResult(outFile: string): boolean {
   }
 }
 
-/** One STT call with retries. Returns the parsed utterances, or [] after MAX_ATTEMPTS. */
+/**
+ * One STT call with retries. Returns the parsed utterances, or [] when the
+ * tries run out: MAX_BLOCK_ATTEMPTS if the last error was a block, otherwise
+ * MAX_ATTEMPTS.
+ */
 async function transcribe(chunk: any, tag: string): Promise<any[]> {
   const prompt = buildSTTPrompt(chunk);
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     try {
       const response = await ai.models.generateContent({
         model: MODEL,
@@ -202,9 +235,11 @@ async function transcribe(chunk: any, tag: string): Promise<any[]> {
       const raw = response.text?.trim() || "";
       if (!raw) {
         const u = response.usageMetadata ?? ({} as any);
-        throw new Error(
+        const err: any = new Error(
           `empty response (finishReason=${finishReason ?? "none"}, promptFeedback=${JSON.stringify(response.promptFeedback ?? null)}, thoughts=${u.thoughtsTokenCount ?? "?"}, output=${u.candidatesTokenCount ?? "?"})`,
         );
+        err.blocked = Boolean(response.promptFeedback?.blockReason);
+        throw err;
       }
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) throw new Error("response was not an array");
@@ -216,17 +251,18 @@ async function transcribe(chunk: any, tag: string): Promise<any[]> {
       const backoff =
         (isRateLimit ? Math.min(60000, Math.pow(2, attempt) * 5000) : 3000 * attempt) +
         Math.random() * 2000;
-      if (attempt < MAX_ATTEMPTS) {
+      const cap = err?.blocked ? MAX_BLOCK_ATTEMPTS : MAX_ATTEMPTS;
+      if (attempt < cap) {
         console.error(
-          `${tag} error: ${err.message}. Retry ${attempt}/${MAX_ATTEMPTS - 1} in ${Math.round(backoff / 1000)}s`,
+          `${tag} error: ${err.message}. Retry ${attempt}/${cap - 1} in ${Math.round(backoff / 1000)}s`,
         );
         await new Promise((r) => setTimeout(r, backoff));
       } else {
-        console.error(`${tag} error: ${err.message}. Giving up after ${MAX_ATTEMPTS} attempts`);
+        console.error(`${tag} error: ${err.message}. Giving up after ${attempt} attempts`);
+        return [];
       }
     }
   }
-  return [];
 }
 
 async function runJob(job: { pass: string; chunk: any }): Promise<void> {
@@ -297,20 +333,54 @@ async function runJob(job: { pass: string; chunk: any }): Promise<void> {
   );
 }
 
-const jobs = passNames.flatMap((pass) => plan.chunks.map((chunk: any) => ({ pass, chunk })));
+type Job = { pass: string; chunk: any };
+const outFileOf = (j: Job) => path.join(baseDir, j.pass, `${j.chunk.chunk_id}.json`);
+
+/**
+ * Finds results that stop long before another pass of the same chunk does
+ * (see stt_coverage.ts), moves each to <id>.json.truncated so it no longer
+ * counts as done, and returns those jobs to run again.
+ */
+function setAsideTruncated(): Job[] {
+  const redo: Job[] = [];
+  for (const chunk of chunks) {
+    const results = passNames.flatMap((pass) => {
+      const f = outFileOf({ pass, chunk });
+      if (!hasResult(f)) return [];
+      return [{ pass, utterances: JSON.parse(fs.readFileSync(f, "utf-8")).utterances }];
+    });
+    for (const [pass, reason] of findTruncated(results)) {
+      const f = outFileOf({ pass, chunk });
+      fs.renameSync(f, `${f}.truncated`);
+      console.error(`[${pass} ${chunk.chunk_id}] truncated: ${reason}. Moved to ${path.basename(f)}.truncated`);
+      redo.push({ pass, chunk });
+    }
+  }
+  return redo;
+}
+
+const jobs: Job[] = passNames.flatMap((pass) => chunks.map((chunk: any) => ({ pass, chunk })));
 console.error(
-  `STT: ${plan.chunks.length} chunks × ${passNames.length} pass(es) = ${jobs.length} jobs, ` +
-    `${Number.isFinite(CONCURRENCY) ? CONCURRENCY : "all"} at a time, up to ${MAX_ATTEMPTS} attempts each`,
+  `STT: ${chunks.length} chunks × ${passNames.length} pass(es) = ${jobs.length} jobs, ` +
+    `${Number.isFinite(CONCURRENCY) ? CONCURRENCY : "all"} at a time, up to ${MAX_ATTEMPTS} attempts each ` +
+    `(${MAX_BLOCK_ATTEMPTS} when blocked)`,
 );
 await pool(jobs, CONCURRENCY, runJob);
 
-const missing = jobs.filter(
-  (j) => !hasResult(path.join(baseDir, j.pass, `${j.chunk.chunk_id}.json`)),
-);
+// One more round for passes that came back cut off. If a result is still cut
+// off after that, it stays set aside and counts as missing below.
+const redo = setAsideTruncated();
+if (redo.length) {
+  console.error(`Running ${redo.length} truncated job(s) again`);
+  await pool(redo, CONCURRENCY, runJob);
+  setAsideTruncated();
+}
+
+const missing = jobs.filter((j) => !hasResult(outFileOf(j)));
 for (const pass of passNames) {
   const miss = missing.filter((j) => j.pass === pass).map((j) => j.chunk.chunk_id);
   console.error(
-    `${pass}: ${plan.chunks.length - miss.length}/${plan.chunks.length}${miss.length ? ` — missing ${miss.join(", ")}` : ""}`,
+    `${pass}: ${chunks.length - miss.length}/${chunks.length}${miss.length ? ` — missing ${miss.join(", ")}` : ""}`,
   );
 }
 if (missing.length) {

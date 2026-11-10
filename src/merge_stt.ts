@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { formatTimestamp } from "./parser";
+import { findTruncated, type PassUtterances } from "./stt_coverage";
 
 // Merge every STT pass (stt_results, stt_results_2, ...) into one transcript
 // per chunk: stt_results_merged/<chunk_id>.json.
@@ -69,14 +70,23 @@ const clipTime = (sec: number) => {
   return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`;
 };
 
+// Passes that stop long before another pass of the same chunk does. They are
+// still merged (their early part is good), but the run exits 1 so the
+// orchestrator redoes them. stt_chunks.ts already retries these; this catches
+// files from older runs or from a retry that came back cut off again.
+const truncated: string[] = [];
+
 for (const chunk of plan.chunks) {
   const utts: Utt[] = [];
   const present: string[] = [];
+  const perPass: PassUtterances[] = [];
   for (const [i, dir] of passDirs.entries()) {
     const f = path.join(baseDir, dir, `${chunk.chunk_id}.json`);
     if (!fs.existsSync(f)) continue;
     present.push(dir);
-    for (const u of JSON.parse(fs.readFileSync(f, "utf-8")).utterances ?? []) {
+    const passUtts = JSON.parse(fs.readFileSync(f, "utf-8")).utterances ?? [];
+    perPass.push({ pass: dir, utterances: passUtts });
+    for (const u of passUtts) {
       if (!Number.isFinite(u.abs_start) || !Number.isFinite(u.abs_end)) continue;
       utts.push({
         start_sec: Number(u.start_sec),
@@ -94,6 +104,9 @@ for (const chunk of plan.chunks) {
   if (utts.length === 0) {
     console.error(`${chunk.chunk_id}: no STT results in any pass`);
     continue;
+  }
+  for (const [dir, reason] of findTruncated(perPass)) {
+    truncated.push(`  ${path.join(baseDir, dir, `${chunk.chunk_id}.json`)}: ${reason}`);
   }
 
   utts.sort((a, b) => a.abs_start - b.abs_start || a.abs_end - b.abs_end);
@@ -181,3 +194,11 @@ for (const chunk of plan.chunks) {
   );
 }
 console.error(`\nWrote ${outDir}/`);
+if (truncated.length) {
+  console.error(
+    `\nTRUNCATED — ${truncated.length} pass file(s) stop long before another pass of the same chunk:\n` +
+      truncated.join("\n") +
+      `\nDelete each file, run stt_chunks.ts --passes N --only <chunk_id> again, then run merge_stt.ts again.`,
+  );
+  process.exit(1);
+}
