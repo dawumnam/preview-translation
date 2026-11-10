@@ -3,9 +3,8 @@
 //   parse the script into a timeline      (script.ts)
 //   decode the soundtrack once            (audio.ts)        ┐ at the same time
 //   write the episode brief               (brief.ts)        ┘
-//   listen: two full passes, all windows at once (listen.ts)
-//   compare the passes                    (reconcile.ts)
-//   three focused listens of the lines where the passes differ
+//   listen: three passes, all windows at once        (listen.ts)
+//   decide each line by the agreement of the passes  (reconcile.ts)
 //   write translations.json, apply, verify
 //
 // Nothing here waits for a person or for an agent. The slowest single model
@@ -18,8 +17,8 @@ import { promisify } from "util";
 import { decodeAudio, mediaDuration } from "./audio";
 import { briefText, makeBrief, type Brief } from "./brief";
 import { extractHwpx, repackHwpx } from "./hwpx";
-import { listenPass, type Candidate, type ListenResult, type PassConfig } from "./listen";
-import { consensus, firstRound, type Decision } from "./reconcile";
+import { collect, listenOne, type Candidate, type ListenResult, type PassConfig, type WindowResult } from "./listen";
+import { decide, type Decision } from "./reconcile";
 import { replaceMarkers, type Translation } from "./replace";
 import { clock, parseScript, type ScriptLine } from "./script";
 import { DEFAULT_WINDOW, planWindows, type ListenWindow } from "./windows";
@@ -61,7 +60,8 @@ export interface EpisodeReport {
   workDir: string;
   markers: number;
   unrequested: number;
-  windows: { a: number; b: number; c: number };
+  /** Windows in each pass. */
+  windows: number[];
   confidence: { high: number; medium: number; low: number };
   flagged: { marker: number; speaker: string; tc: string; reason: string; text: string }[];
   billableSec: number;
@@ -126,8 +126,6 @@ function unionSeconds(spans: [number, number][]): number {
   }
   return Math.round((cur ? total + cur[1] - cur[0] : total) * 10) / 10;
 }
-
-const byMarker = (cs: Candidate[]) => new Map(cs.map((c) => [c.marker, c]));
 
 export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
   const id = episodeId(o.script);
@@ -210,96 +208,111 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
 
   const po = { brief: briefText(brief), mask: o.mask?.(lines) };
   const base = { ...DEFAULT_WINDOW, mediaDur };
-  // The two passes cut the audio differently, so a line near a window edge in
-  // one pass is in the middle of a window in the other.
-  const windowsA = planWindows(lines, base, undefined, undefined, "a");
-  const windowsB = planWindows(lines, { ...base, pre: 12, post: 10, maxLen: 60 }, undefined, undefined, "b");
-  const passA: PassConfig = { name: "A", model: MODELS.listen, thinkingLevel: "MEDIUM", fallbackModel: MODELS.fallback };
-  const passB: PassConfig = { ...passA, name: "B" };
+  // Three passes cut the audio in three ways, so a line near a window edge in
+  // one pass is in the middle of a window in the others.
+  const plans = [
+    { name: "A", windows: planWindows(lines, base, undefined, undefined, "a") },
+    { name: "B", windows: planWindows(lines, { ...base, pre: 12, post: 10, maxLen: 60 }, undefined, undefined, "b") },
+    { name: "C", windows: planWindows(lines, { ...base, pre: 10, post: 12, maxLen: 80 }, undefined, undefined, "c") },
+  ];
+  // More thinking did not make the model hear better (Argon low/medium/high:
+  // 0.90/0.89/0.91 on the benchmark), and HIGH takes twice the time.
+  const passConfig: PassConfig = { name: "", model: MODELS.listen, thinkingLevel: "MEDIUM", fallbackModel: MODELS.fallback };
 
   let done = 0;
-  const totalWindows = windowsA.length + windowsB.length;
+  const totalWindows = plans.reduce((n, p) => n + p.windows.length, 0);
   const tick = () => {
     done++;
-    if (done % 20 === 0 || done === totalWindows) log(`listening: ${done}/${totalWindows} windows`);
+    if (done % 25 === 0 || done === totalWindows) log(`listening: ${done}/${totalWindows} windows`);
   };
   // A saved pass is used again only for the same script, media and plan: a
   // new version of the script can move every marker index.
-  const planKey = (windows: ListenWindow[], extra: unknown = null) =>
+  const planKey = (windows: ListenWindow[]) =>
     createHash("sha1")
       .update(
         JSON.stringify([
           mediaPath, Math.round(mediaDur), MODELS.listen, po.brief, [...(po.mask ?? [])],
           markers.map((m) => [m.index, m.charName, m.timestamp, m.language]),
           windows.map((w) => [w.start, w.end, w.markers.map((l) => l.marker!.index)]),
-          extra,
         ]),
       )
       .digest("hex");
   type SavedPass = ListenResult & { key?: string };
-  const runPass = async (cfg: PassConfig, windows: ListenWindow[], file: string): Promise<ListenResult> => {
+  /** Starts every window of a pass now (or takes it from a saved pass). One promise for each window. */
+  const startPass = (cfg: PassConfig, windows: ListenWindow[]) => {
+    const file = `pass_${cfg.name.toLowerCase()}.json`;
     const key = planKey(windows);
     const old = saved<SavedPass>(file);
-    if (old && old.key === key && old.failed.length === 0) {
-      for (const _ of windows) tick();
-      return old;
-    }
-    const r = await listenPass(cfg, windows, pcm, po, mediaDur, tick);
-    save(file, { ...r, key });
-    return r;
+    const reuse = old && old.key === key && old.failed.length === 0 ? old : null;
+    const jobs = new Map<string, Promise<WindowResult>>(
+      windows.map((w) => [
+        w.id,
+        (reuse
+          ? Promise.resolve({ window: w.id, candidates: reuse.candidates.filter((c) => c.window === w.id), seconds: 0 })
+          : listenOne(cfg, w, pcm, po, mediaDur)
+        ).finally(tick),
+      ]),
+    );
+    const all = Promise.all(jobs.values()).then((rs) => {
+      const r = collect(rs);
+      if (!reuse) save(file, { ...r, key });
+      for (const f of r.failed) problems.push(`window ${f.window}: ${f.reason}`);
+      return r;
+    });
+    return { windows, jobs, all };
   };
-  const [ra, rb] = await timed("listen", () =>
-    Promise.all([runPass(passA, windowsA, "pass_a.json"), runPass(passB, windowsB, "pass_b.json")]),
-  );
-  for (const r of [ra, rb]) for (const f of r.failed) problems.push(`window ${f.window}: ${f.reason}`);
-  const a = byMarker(ra.candidates);
-  const b = byMarker(rb.candidates);
+  const tListen = performance.now();
+  const since = () => Math.round((performance.now() - tListen) / 100) / 10;
+  const passes = plans.map((p) => startPass({ ...passConfig, name: p.name }, p.windows));
+  const listened = Promise.all(passes.map((p) => p.all)).then(() => {
+    seconds.listen = since();
+  });
 
-  // --- Decide. Where the passes differ, listen a third time with a close look.
+  // --- Decide, group by group. Markers that share a window in any pass form
+  // a group. A group is decided as soon as its own windows have answered, so
+  // the compare calls run while other windows are still out.
   const order = markers.map((m) => m.index);
-  const first = await timed("compare", () => firstRound(a, b, order, MODELS.judge));
-  const open = order.filter((m) => !first.get(m));
-  let windowsC: ListenWindow[] = [];
-  let focusedListens: Map<number, Candidate>[] = [];
+  const parent = new Map<number, number>(order.map((m) => [m, m]));
+  const find = (m: number): number => (parent.get(m) === m ? m : find(parent.get(m)!));
+  for (const p of plans)
+    for (const w of p.windows) {
+      const ids = w.markers.map((l) => l.marker!.index);
+      for (const m of ids) parent.set(find(m), find(ids[0]));
+    }
+  const groups = new Map<number, number[]>();
+  for (const m of order) groups.set(find(m), [...(groups.get(find(m)) ?? []), m]);
+
+  const heard: Map<number, Candidate>[] = passes.map(() => new Map());
   const decisions = new Map<number, Decision>();
-  for (const m of order) if (first.get(m)) decisions.set(m, first.get(m)!);
-  if (open.length) {
-    const known = new Map(
-      [...decisions.values()].filter((d) => d.pick).map((d) => [d.marker, { ko: d.pick!.ko, start: d.pick!.start, end: d.pick!.end }]),
+  let unjudged = 0;
+  const decideGroup = async (ms: number[]) => {
+    const mine = new Set(ms);
+    const mineOf = await Promise.all(
+      passes.map(async (p, k) => {
+        const rs = await Promise.all(p.windows.filter((w) => w.markers.some((l) => mine.has(l.marker!.index))).map((w) => p.jobs.get(w.id)!));
+        const map = new Map(rs.flatMap((r) => r.candidates).filter((c) => mine.has(c.marker)).map((c) => [c.marker, c]));
+        for (const [m, c] of map) heard[k].set(m, c);
+        return map;
+      }),
     );
-    // Cover what each pass pointed at, so the focused listens can hear both readings.
-    windowsC = planWindows(
-      lines,
-      { ...base, pre: 6, post: 10, maxLen: 60 },
-      new Set(open),
-      (m, [lo, hi]) => {
-        const spans = [a.get(m), b.get(m)].filter((c) => c?.heard) as Candidate[];
-        return [Math.min(lo, ...spans.map((c) => c.start - 5)), Math.max(hi, ...spans.map((c) => c.end + 5))];
-      },
-      "c",
+    for (const [m, d] of await decide(ms, mineOf, MODELS.judge, (n) => (unjudged += n))) decisions.set(m, d);
+  };
+  await Promise.all([...[...groups.values()].map(decideGroup), listened]);
+  seconds.decided = since();
+
+  if (unjudged)
+    problems.push(
+      `the compare model (${MODELS.judge}) gave no answer for ${unjudged} pairs of readings; text overlap decided them, so more lines than usual are medium or " ??". Run again for a better result.`,
     );
-    // More thinking did not make the model hear better (Argon low/medium/high:
-    // 0.90/0.89/0.91 on the benchmark), so the focused listens keep the
-    // level of the passes. What they add is a closer window, the settled
-    // neighbours as fixed points, and three more independent hearings.
-    const keyC = planKey(windowsC, [...known]);
-    const rcs = await timed("focused", () =>
-      Promise.all(
-        ["C1", "C2", "C3"].map(async (name) => {
-          const file = `pass_${name.toLowerCase()}.json`;
-          const old = saved<SavedPass>(file);
-          if (old && old.key === keyC && old.failed.length === 0) return old;
-          const r = await listenPass({ ...passA, name }, windowsC, pcm, { ...po, known }, mediaDur);
-          save(file, { ...r, key: keyC });
-          return r;
-        }),
-      ),
+
+  // When the model refuses the calls (no key, spending cap, service down),
+  // every line comes back "not heard" and the document would still pass
+  // verify. Stop here: nothing is written.
+  const failed = (await Promise.all(passes.map((p) => p.all))).flatMap((r) => r.failed);
+  if (failed.length > totalWindows / 4) {
+    throw new Error(
+      `${failed.length} of ${totalWindows} listening windows got no answer (${failed[0].reason}). No output was written. Run the same command again when the cause is fixed.`,
     );
-    for (const r of rcs) for (const f of r.failed) problems.push(`window ${f.window} (${r.candidates[0]?.pass ?? "focused"}): ${f.reason}`);
-    focusedListens = rcs.map((r) => byMarker(r.candidates));
-    const second = await consensus(open, [a, b], focusedListens, MODELS.judge);
-    for (const [m, d] of second) decisions.set(m, d);
-    log(`${open.length} of ${order.length} lines needed focused listens`);
   }
 
   // --- translations.json (same shape as before), evidence, document.
@@ -324,7 +337,7 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
     markers.map((m) => ({
       marker: m.index, speaker: m.charName, tc: m.timestamp,
       decision: { ...decisions.get(m.index)!, pick: decisions.get(m.index)!.pick?.pass },
-      listens: [a, b, ...focusedListens].map((l) => l.get(m.index)).filter(Boolean),
+      listens: heard.map((l) => l.get(m.index)).filter(Boolean),
     })),
   );
 
@@ -352,7 +365,7 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
   const report: EpisodeReport = {
     id, output, workDir,
     markers: markers.length, unrequested,
-    windows: { a: windowsA.length, b: windowsB.length, c: windowsC.length },
+    windows: plans.map((p) => p.windows.length),
     confidence: conf,
     flagged: translations
       .filter((t) => t.confidence === "low")
@@ -360,9 +373,10 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
         marker: t.markerIndex, speaker: t.charName, tc: clock(t.timestamp),
         reason: decisions.get(t.markerIndex)!.reason, text: t.translation ?? "",
       })),
-    // Billed: the audio that two listens agree on. A "??" line is not billed;
-    // its seconds are reported apart so they can be added by hand.
-    billableSec: unionSeconds(spans((t) => t.confidence !== "low")),
+    // Billed, as before: the audio each translation was written from, for every
+    // line where speech was heard. A line that no pass heard has no span. The
+    // share that comes from " ??" lines alone is reported apart.
+    billableSec: unionSeconds(spans(() => true)),
     billableLowSec: Math.round((unionSeconds(spans(() => true)) - unionSeconds(spans((t) => t.confidence !== "low"))) * 10) / 10,
     seconds, verify, verifyOutput, problems,
   };
@@ -370,12 +384,13 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
   save("speech_duration.json", {
     hwpx_path: hwpxPath,
     definition:
-      "union over markers of [speech_start, speech_end] from translations.json, for lines that two independent listens agree on (confidence high or medium)",
+      "union over markers of [speech_start, speech_end] from translations.json: the audio each translation was written from, counted once where spans overlap",
     billable_sec: report.billableSec,
     billable_min: Math.round((report.billableSec / 60) * 10) / 10,
-    low_confidence_sec_not_billed: report.billableLowSec,
+    of_which_only_low_confidence_lines_sec: report.billableLowSec,
     markers: markers.length,
     markers_low_confidence: conf.low,
+    markers_not_heard: translations.filter((t) => t.speech_end! <= t.speech_start!).length,
   });
   return report;
 }

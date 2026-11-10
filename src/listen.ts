@@ -25,7 +25,14 @@ export interface PassConfig {
   thinkingLevel: "LOW" | "MEDIUM" | "HIGH";
   /** Used when the model blocks the window or is not available. */
   fallbackModel: string;
+  /**
+   * Longest time to wait for one window, all tries together. After that the
+   * window counts as failed in this pass; the other passes still hear its lines.
+   */
+  windowLimitMs?: number;
 }
+
+const WINDOW_LIMIT_MS = 150_000;
 
 const clipSeconds = (s: string): number => {
   const p = String(s ?? "").trim().split(":");
@@ -95,9 +102,9 @@ async function listenWindow(
       parts: [audioPart(pcm, t.win.start, t.win.end), { text: buildFillPrompt(t.win, po) }],
       schema: FILL_SCHEMA,
       thinkingLevel: cfg.thinkingLevel,
-      timeoutMs: 150_000,
-      hedgeAfterMs: 30_000,
-      attempts: 3,
+      timeoutMs: 90_000,
+      hedgeAfterMs: [20_000, 40_000],
+      attempts: 2,
       label: `${cfg.name} ${w.id}`,
     });
     latencyMs += r.latencyMs;
@@ -120,24 +127,57 @@ function shiftClip(ts: string, by: number): string {
   return `${String(Math.floor(v / 60)).padStart(2, "0")}:${(v % 60).toFixed(1).padStart(4, "0")}`;
 }
 
+export interface WindowResult {
+  window: string;
+  /** One candidate for each marker of the window; "not heard" when the window gave no answer. */
+  candidates: Candidate[];
+  /** Why the window gave no answer. */
+  failed?: string;
+  seconds: number;
+}
+
+/** One window of a pass. Never throws. */
+export async function listenOne(
+  cfg: PassConfig,
+  w: ListenWindow,
+  pcm: string,
+  po: PromptOptions,
+  mediaDur: number,
+): Promise<WindowResult> {
+  // One window must not hold up the run: a dead connection went through
+  // three tries with three models and took minutes.
+  const limit = cfg.windowLimitMs ?? WINDOW_LIMIT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const r = await Promise.race([
+    listenWindow(w, pcm, cfg, po, mediaDur),
+    new Promise<{ fills: null; reason: string; latencyMs: number }>((resolve) => {
+      timer = setTimeout(() => resolve({ fills: null, reason: `no answer in ${Math.round(limit / 1000)} s`, latencyMs: limit }), limit);
+    }),
+  ]);
+  clearTimeout(timer);
+  return {
+    window: w.id,
+    candidates: toCandidates(w, r.fills ?? [], cfg.name),
+    failed: r.fills ? undefined : (r.reason ?? "no answer"),
+    seconds: r.latencyMs / 1000,
+  };
+}
+
+export function collect(results: WindowResult[]): ListenResult {
+  return {
+    candidates: results.flatMap((r) => r.candidates).sort((a, b) => a.marker - b.marker),
+    failed: results.filter((r) => r.failed).map((r) => ({ window: r.window, reason: r.failed! })),
+    latencies: results.map((r) => r.seconds),
+  };
+}
+
+/** All windows of a pass at the same time. */
 export async function listenPass(
   cfg: PassConfig,
   windows: ListenWindow[],
   pcm: string,
   po: PromptOptions,
   mediaDur: number,
-  onWindow?: () => void,
 ): Promise<ListenResult> {
-  const out: ListenResult = { candidates: [], failed: [], latencies: [] };
-  await Promise.all(
-    windows.map(async (w) => {
-      const r = await listenWindow(w, pcm, cfg, po, mediaDur);
-      out.latencies.push(r.latencyMs / 1000);
-      if (!r.fills) out.failed.push({ window: w.id, reason: r.reason ?? "" });
-      out.candidates.push(...toCandidates(w, r.fills ?? [], cfg.name));
-      onWindow?.();
-    }),
-  );
-  out.candidates.sort((a, b) => a.marker - b.marker);
-  return out;
+  return collect(await Promise.all(windows.map((w) => listenOne(cfg, w, pcm, po, mediaDur))));
 }

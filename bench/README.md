@@ -40,17 +40,29 @@ bun bench/bench.ts compare <a> <b>         # same / detail / different for each 
 
 `compare` of two runs of the same code is the repeatability check: a line that comes out different on a second run was not heard reliably. Use `compare <name> delivered` to see how far a run is from an earlier delivery.
 
-A full run of the eight episodes costs about 11 USD at the November 2026 price of `gemini-4-argon` and takes 4 to 6 minutes.
+A full run of the eight episodes costs about 13 USD at the November 2026 price of `gemini-4-argon` and takes about 5 minutes. Mind the spending cap of the Google project: a day of benchmark runs (about 120 to 130 USD) used it up on 10 November 2026.
 
-## Reference results (10 November 2026, three-vote judge, 233 lines)
+## Reference results (10 November 2026, 233 lines)
+
+Graded by the three-vote Gemini judge in `bench.ts`:
 
 | Method | Score | Notes |
 |---|---|---|
 | Earlier deliveries (3 × STT at HIGH thinking, mapper agents, probes, review) | 0.901 | made with the answer keys visible |
-| Complete new method (two passes, focused listens, brief) | 0.891 | answer keys hidden; high lines 85% full score, medium lines 58% |
+| Two passes + three focused listens of disputed lines (an earlier version) | 0.891 | answer keys hidden; high lines 85% full score, medium lines 58% |
 | One script-guided pass, `gemini-4-argon` | 0.87–0.91 | eight runs; thinking LOW 0.901, MEDIUM 0.87–0.91, HIGH 0.908; windows of 45 / 60 / 100 s: 0.886 / 0.897 / 0.908 |
 | One script-guided pass, `gemini-3.8-flash` | 0.85 | LOW 0.852, MEDIUM 0.845 |
 
-`compare` results: the complete method against the earlier deliveries: 69% same, 21% detail, 10% different. Two runs of the complete method against each other: 7 to 9% different, nearly all on lines that are not "high" in both runs.
+The current design (three passes at once, majority vote) ran on all eight episodes, but the Google project reached its spending cap before the Gemini judge could score it. Three Claude graders scored it in its place, blind and in pairs with two other results (same rubric, the three systems in a shuffled order for each line):
+
+| Method | Score | Full / partial / zero |
+|---|---|---|
+| Earlier deliveries | 0.933 | 208 / 19 / 6 |
+| Three passes, majority vote (current) | 0.933 | 208 / 19 / 6 |
+| Two passes + focused listens | 0.931 | 207 / 20 / 6 |
+
+Line by line, the current design is better than the earlier deliveries on 7 lines and worse on 7. The Claude graders are more lenient than the Gemini judge, so compare scores only inside one table. To get the Gemini-judge score of the current design, run `bun bench/bench.ts run <name>` when the cap is raised.
+
+`compare` results: the two-round version against the earlier deliveries: 69% same, 21% detail, 10% different. Two runs of that version against each other: 7 to 9% different, nearly all on lines where the passes did not agree.
 
 A separate blind test (80 lines, short clips, no script shown, one judge vote): `gemini-4-argon` 0.89–0.90, `gemini-3.8-flash` LOW 0.84, MEDIUM 0.84, HIGH 0.89, `gemini-3.1-pro-preview` 0.80–0.81. `gemini-3.5-transcribe` gave exact word times for Korean speech but did not transcribe the quiet Georgian lines.

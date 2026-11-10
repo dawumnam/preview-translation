@@ -174,7 +174,7 @@ async function run(name: string, only?: string[]) {
       results[`${r.id}:${t.markerIndex}`] = { ko: t.translation, confidence: t.confidence, start: t.speech_start, end: t.speech_end };
     const s = r.seconds;
     console.log(
-      `${r.id}: ${r.markers} lines in ${s.total} s (decode ${s.decode}, brief ${s.brief}, listen ${s.listen}, compare ${s.compare}, third ${s.focused ?? 0}); high/medium/low ${r.confidence.high}/${r.confidence.medium}/${r.confidence.low}; billable ${r.billableSec} s; verify ${r.verify}`,
+      `${r.id}: ${r.markers} lines in ${s.total} s (decode ${s.decode}, brief ${s.brief}, windows heard after ${s.listen}, decided after ${s.decided}); high/medium/low ${r.confidence.high}/${r.confidence.medium}/${r.confidence.low}; billable ${r.billableSec} s; verify ${r.verify}`,
     );
   }
   fs.writeFileSync(resultsFile(name), JSON.stringify(results, null, 1));

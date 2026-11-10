@@ -20,8 +20,8 @@ export interface CallOptions {
   timeoutMs?: number;
   /** Tries for errors that a retry can fix (429, 5xx, timeout, bad JSON). */
   attempts?: number;
-  /** Start a second identical request when the first has not answered after this long. */
-  hedgeAfterMs?: number;
+  /** Start an identical copy of the request when no answer has come after this long. Several times start several copies. */
+  hedgeAfterMs?: number | number[];
   /** Shown in error messages. */
   label?: string;
 }
@@ -54,24 +54,48 @@ export function usageReport(): Record<string, Usage> {
   return Object.fromEntries(usageByModel);
 }
 
-// One limit for the whole process. Gemini has answered 60 calls at once with
-// no 429 on this key; LLM_CONCURRENCY changes the limit.
-let limit = parseInt(process.env.LLM_CONCURRENCY || "", 10) || 64;
-let active = 0;
-const waiting: (() => void)[] = [];
-async function acquire() {
-  if (active >= limit) await new Promise<void>((r) => waiting.push(r));
-  active++;
+// Calls in flight are limited in two lanes. Audio calls (the listening
+// windows) are many and slow. Text calls (brief, compare) are few and fast, and
+// a decision waits for them, so they must not queue behind hundreds of windows.
+// Gemini has answered 135 audio calls at once with no 429 on this key;
+// LLM_CONCURRENCY changes the audio limit.
+class Lane {
+  private active = 0;
+  private waiting: (() => void)[] = [];
+  constructor(public limit: number) {}
+  async acquire() {
+    if (this.active < this.limit) {
+      this.active++;
+      return;
+    }
+    await new Promise<void>((r) => this.waiting.push(r)); // a finished call hands its slot over
+  }
+  release() {
+    // Copies of slow calls can take the count above the limit; then a slot is
+    // dropped and not handed over.
+    if (this.waiting.length && this.active <= this.limit) this.waiting.shift()!();
+    else this.active--;
+  }
+  /** A copy of a slow call takes a slot without waiting for one, so new calls wait while copies run. */
+  occupy() {
+    this.active++;
+  }
 }
-function release() {
-  active--;
-  waiting.shift()?.();
-}
+const audioLane = new Lane(parseInt(process.env.LLM_CONCURRENCY || "", 10) || 128);
+const textLane = new Lane(32);
+const laneOf = (o: CallOptions) => (o.parts.some((p) => p?.inlineData) ? audioLane : textLane);
 export function setConcurrency(n: number) {
-  limit = Math.max(1, n);
+  audioLane.limit = Math.max(1, n);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Set when the API refuses the project or the key as a whole (spending cap, bad key). */
+let refused: string | null = null;
+/** Tests only. */
+export function resetRefusal() {
+  refused = null;
+}
 
 type Once<T> = { value: T } | { blocked: string } | { retry: string; rateLimited?: boolean } | { fatal: string };
 
@@ -103,6 +127,16 @@ async function once<T>(o: CallOptions, signal: AbortSignal): Promise<Once<T>> {
   }
   if (!res.ok) {
     const text = (await res.text().catch(() => "")).slice(0, 300);
+    // The project's spending cap is not a rate limit: no retry will get through.
+    if (res.status === 429 && /spending cap|spend cap/i.test(text)) {
+      refused = "the Gemini project has reached its spending cap (raise it at https://ai.studio/spend, or wait for the next month)";
+      return { fatal: refused };
+    }
+    // A key that is missing, wrong or without access fails every call in the same way.
+    if (res.status === 401 || res.status === 403 || (res.status === 400 && /API key/i.test(text))) {
+      refused = `the Gemini API refused the key (${res.status} ${text.replace(/\s+/g, " ").slice(0, 160)})`;
+      return { fatal: refused };
+    }
     if (res.status === 429) return { retry: `429 ${text}`, rateLimited: true };
     if (res.status >= 500) return { retry: `${res.status} ${text}` };
     return { fatal: `${res.status} ${text}` };
@@ -129,40 +163,62 @@ async function once<T>(o: CallOptions, signal: AbortSignal): Promise<Once<T>> {
   }
 }
 
-/** One request, with a duplicate started if the first is slow. The first answer wins. */
-async function hedged<T>(o: CallOptions): Promise<Once<T>> {
+/**
+ * One request, with identical copies started when it is slow. The first
+ * answer wins and the others are cancelled.
+ *
+ * How long a call takes does not follow its size: in a busy hour a window
+ * with one short line took 52 s while the median was 20 s. A copy is a new
+ * draw from that distribution, so it cuts the long waits.
+ */
+function hedged<T>(o: CallOptions, lane: Lane): Promise<Once<T>> {
+  const delays = o.hedgeAfterMs === undefined ? [] : [o.hedgeAfterMs].flat();
   const ctl = new AbortController();
-  const first = once<T>(o, ctl.signal);
-  if (!o.hedgeAfterMs) return first;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const second = new Promise<Once<T>>((resolve) => {
-    timer = setTimeout(() => once<T>(o, ctl.signal).then(resolve), o.hedgeAfterMs);
-  });
   const usable = (r: Once<T>) => "value" in r || "blocked" in r || "fatal" in r;
-  try {
-    const a = await Promise.race([first, second]);
-    if (usable(a)) return a;
-    // The faster one failed in a way a retry can fix: give the other one its chance.
-    const b = await Promise.race([first.then((r) => (r === a ? second : r)), second.then((r) => (r === a ? first : r))]);
-    return usable(b) ? b : a;
-  } finally {
-    clearTimeout(timer);
-    ctl.abort();
-  }
+  return new Promise<Once<T>>((resolve) => {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let inFlight = 0;
+    let done = false;
+    const finish = (r: Once<T>) => {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      ctl.abort();
+      resolve(r);
+    };
+    const launch = (copy: boolean) => {
+      if (done) return;
+      inFlight++;
+      if (copy) lane.occupy();
+      once<T>(o, ctl.signal).then((r) => {
+        inFlight--;
+        if (copy) lane.release();
+        // A failure counts only when no copy is still on its way. Then the
+        // caller's retry (with backoff) takes over.
+        if (usable(r) || inFlight === 0) finish(r);
+      });
+    };
+    launch(false);
+    for (const d of delays) timers.push(setTimeout(() => launch(true), d));
+  });
 }
 
 /** Calls the model and returns parsed JSON, or says why it could not. Never throws. */
 export async function callJson<T>(o: CallOptions): Promise<CallResult<T>> {
+  // After such a refusal no call can get through, so the rest fail at once
+  // and do not send their audio.
+  if (refused) return { error: refused, latencyMs: 0, attempts: 0 };
   const t0 = performance.now();
   const max = o.attempts ?? 4;
   let last = "";
   for (let attempt = 1; attempt <= max; attempt++) {
-    await acquire();
+    const lane = laneOf(o);
+    await lane.acquire();
     let r: Once<T>;
     try {
-      r = await hedged<T>(o);
+      r = await hedged<T>(o, lane);
     } finally {
-      release();
+      lane.release();
     }
     const latencyMs = performance.now() - t0;
     if ("value" in r) return { value: r.value, latencyMs, attempts: attempt };

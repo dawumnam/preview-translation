@@ -7,11 +7,11 @@ import os from "os";
 import path from "path";
 import { sliceWav, SAMPLE_RATE } from "./audio";
 import { tidyGlossary } from "./brief";
-import { callJson } from "./llm";
-import type { Candidate } from "./listen";
+import { callJson, resetRefusal } from "./llm";
+import { listenOne, type Candidate } from "./listen";
 import { parseMarkers } from "./parser";
 import { buildFillPrompt } from "./prompt";
-import { consensus, firstRound, textSim } from "./reconcile";
+import { decide, textSim } from "./reconcile";
 import { parseScript } from "./script";
 import { DEFAULT_WINDOW, planWindows } from "./windows";
 
@@ -169,36 +169,49 @@ describe("decisions", () => {
     expect(textSim(cand(0, "A", "이 화덕은 300년 됐어요"), cand(0, "B", "내일 눈이 온대요"))).toBeLessThan(0.2);
   });
 
-  test("two passes that agree make a line high; no model call is needed for close text", async () => {
-    const a = map(cand(0, "A", "이 화덕은 300년 됐어요"));
-    const b = map(cand(0, "B", "이 화덕은 300년 됐어요."));
-    const d = await firstRound(a, b, [0], "no-model");
+  test("three passes that agree make a line high; no model call is needed for close text", async () => {
+    const say = "이 화덕은 300년 됐어요";
+    const d = await decide([0], [map(cand(0, "A", say)), map(cand(0, "B", say + ".")), map(cand(0, "C", say))], "no-model");
     expect(d.get(0)!.confidence).toBe("high");
-  });
-
-  test("neighbours that are the wrong way round in time are both reopened", async () => {
-    const a = map(cand(0, "A", "첫 번째 말이에요", "x", 30, 34), cand(1, "A", "두 번째 말이에요", "y", 10, 14));
-    const b = map(cand(0, "B", "첫 번째 말이에요", "x", 30, 34), cand(1, "B", "두 번째 말이에요", "y", 10, 14));
-    const d = await firstRound(a, b, [0, 1], "no-model");
-    expect(d.get(0)).toBeNull();
-    expect(d.get(1)).toBeNull();
-  });
-
-  test("three of five listens that agree make a line medium; fewer make it low", async () => {
-    const say = "여기서 30년 일했어요";
-    const passes = [map(cand(0, "A", say), cand(1, "A", "가나다라마바사")), map(cand(0, "B", "전혀 다른 내용입니다"), cand(1, "B", "아자차카타파하"))];
-    const focused = [
-      map(cand(0, "C1", say), cand(1, "C1", "거너더러머버서")),
-      map(cand(0, "C2", say), cand(1, "C2", "고노도로모보소")),
-      map(cand(0, "C3", "또 다른 내용이에요"), cand(1, "C3", "구누두루무부수")),
-    ];
-    const d = await consensus([0, 1, 2], passes, focused, "no-model");
-    expect(d.get(0)!.confidence).toBe("medium");
     expect(d.get(0)!.agree).toBe(3);
-    expect(d.get(0)!.pick!.pass.startsWith("C")).toBe(true);
+  });
+
+  test("two of three make a line medium; no two make it low; nobody heard it makes it low with no text", async () => {
+    const say = "여기서 30년 일했어요";
+    const passes = [
+      map(cand(0, "A", say), cand(1, "A", "가나다라마바사")),
+      map(cand(0, "B", "전혀 다른 내용입니다"), cand(1, "B", "아자차카타파하")),
+      map(cand(0, "C", say), cand(1, "C", "거너더러머버서")),
+    ];
+    const d = await decide([0, 1, 2], passes, "no-model");
+    expect(d.get(0)!.confidence).toBe("medium");
+    expect(d.get(0)!.agree).toBe(2);
+    expect(d.get(0)!.pick!.ko).toBe(say);
     expect(d.get(1)!.confidence).toBe("low");
-    expect(d.get(2)!.pick).toBeUndefined(); // nobody heard marker 2
+    expect(d.get(2)!.pick).toBeUndefined();
     expect(d.get(2)!.confidence).toBe("low");
+  });
+
+  test("neighbours that are the wrong way round in time are both flagged", async () => {
+    const mk = (p: string) => map(cand(0, p, "첫 번째 말이에요", "x", 30, 34), cand(1, p, "두 번째 말이에요", "y", 10, 14));
+    const d = await decide([0, 1], [mk("A"), mk("B"), mk("C")], "no-model");
+    expect(d.get(0)!.confidence).toBe("low");
+    expect(d.get(1)!.confidence).toBe("low");
+    expect(d.get(0)!.reason).toContain("wrong order");
+  });
+
+  test("of the readings that agree, the one of middle length is taken", async () => {
+    const d = await decide(
+      [0],
+      [
+        map(cand(0, "A", "네, 맞아요. 여기서 30년 일했어요.", "კი, ასეა. აქ ოცდაათი წელი ვიმუშავე")),
+        map(cand(0, "B", "네, 맞아요. 여기서 30년 일했어요. 그리고", "კი, ასეა. აქ ოცდაათი წელი ვიმუშავე და")),
+        map(cand(0, "C", "맞아요. 여기서 30년 일했어요.", "ასეა. აქ ოცდაათი წელი ვიმუშავე")),
+      ],
+      "no-model",
+    );
+    expect(d.get(0)!.confidence).toBe("high");
+    expect(d.get(0)!.pick!.pass).toBe("A");
   });
 });
 
@@ -208,6 +221,7 @@ describe("model calls", () => {
   afterEach(() => {
     globalThis.fetch = realFetch;
     process.env.GEMINI_API_KEY = realKey;
+    resetRefusal();
   });
   const reply = (obj: unknown, status = 200) => new Response(JSON.stringify(obj), { status });
   const ok = (value: unknown) => reply({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }] });
@@ -241,6 +255,60 @@ describe("model calls", () => {
     const r = await callJson<{ fast: boolean }>({ ...base, hedgeAfterMs: 20, attempts: 1 });
     expect(r.value).toEqual({ fast: true });
     expect(n).toBe(2);
+  });
+
+  test("two slow calls are overtaken by the third copy", async () => {
+    process.env.GEMINI_API_KEY = "test";
+    let n = 0;
+    globalThis.fetch = ((_: any, init: any) =>
+      ++n <= 2
+        ? new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))))
+        : Promise.resolve(ok({ third: true }))) as any;
+    const r = await callJson<{ third: boolean }>({ ...base, hedgeAfterMs: [10, 20], attempts: 1 });
+    expect(r.value).toEqual({ third: true });
+    expect(n).toBe(3);
+  });
+
+  test("a failed call with no copy on its way goes to the retry at once", async () => {
+    process.env.GEMINI_API_KEY = "test";
+    let n = 0;
+    globalThis.fetch = (async () => (++n === 1 ? reply({ error: "busy" }, 503) : ok([2]))) as any;
+    const t0 = performance.now();
+    const r = await callJson<number[]>({ ...base, hedgeAfterMs: [60_000], attempts: 2 });
+    expect(r.value).toEqual([2]);
+    expect(performance.now() - t0).toBeLessThan(5_000); // does not wait for the 60 s copy
+  });
+
+  test("the spending cap stops all later calls at once", async () => {
+    process.env.GEMINI_API_KEY = "test";
+    let n = 0;
+    globalThis.fetch = (async () => (n++, reply({ error: { message: "Your project has exceeded its monthly spending cap." } }, 429))) as any;
+    const first = await callJson({ ...base, attempts: 4 });
+    expect(first.error).toContain("spending cap");
+    expect(n).toBe(1); // not retried
+    const second = await callJson({ ...base, attempts: 4 });
+    expect(second.error).toContain("spending cap");
+    expect(n).toBe(1); // not sent
+  });
+
+  test("a window with no answer is given up after its time limit", async () => {
+    process.env.GEMINI_API_KEY = "test";
+    globalThis.fetch = ((_: any, init: any) =>
+      new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))))) as any;
+    const pcm = path.join(os.tmpdir(), `pt-test-limit-${process.pid}.pcm`);
+    fs.writeFileSync(pcm, Buffer.alloc(SAMPLE_RATE * 2 * 5));
+    try {
+      const { lines } = parseScript(SCRIPT, BOLD);
+      const w = planWindows(lines, { ...DEFAULT_WINDOW, mediaDur: 5 })[0];
+      const t0 = performance.now();
+      const r = await listenOne({ name: "A", model: "m", thinkingLevel: "MEDIUM", fallbackModel: "f", windowLimitMs: 100 }, w, pcm, {}, 5);
+      expect(performance.now() - t0).toBeLessThan(2000);
+      expect(r.failed).toContain("no answer");
+      expect(r.candidates.length).toBe(w.markers.length);
+      expect(r.candidates.every((c) => !c.heard)).toBe(true);
+    } finally {
+      fs.rmSync(pcm, { force: true });
+    }
   });
 
   test("a truncated answer is not accepted", async () => {

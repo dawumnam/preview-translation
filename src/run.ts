@@ -76,14 +76,14 @@ function print(r: EpisodeReport) {
   const s = r.seconds;
   console.log(`\n${r.id}: ${r.markers} lines translated, ${r.unrequested} non-bold @@ lines left as they are`);
   console.log(
-    `  time ${s.total} s: decode ${s.decode}, brief ${s.brief}, listen ${s.listen} (${r.windows.a}+${r.windows.b} windows), compare ${s.compare}` +
-      `${r.windows.c ? `, focused listens ${s.focused} (3 × ${r.windows.c} windows)` : ""}, apply+verify ${s["apply+verify"]}`,
+    `  time ${s.total} s: decode ${s.decode}, brief ${s.brief}, all ${r.windows.join("+")} windows heard after ${s.listen}, ` +
+      `all lines decided after ${s.decided}, apply+verify ${s["apply+verify"]}`,
   );
   console.log(`  confidence high/medium/low: ${r.confidence.high}/${r.confidence.medium}/${r.confidence.low} (low lines carry " ??")`);
   for (const f of r.flagged) console.log(`    ?? #${f.marker} ${f.tc} ${f.speaker}: ${f.text.slice(0, 60)} — ${f.reason}`);
   console.log(
-    `  billable ${mmss(r.billableSec)} (${r.billableSec} s): lines that two listens agree on` +
-      `${r.billableLowSec ? `; the ?? lines would add ${r.billableLowSec} s` : ""}`,
+    `  billable ${mmss(r.billableSec)} (${r.billableSec} s)` +
+      `${r.billableLowSec ? `, of which ${r.billableLowSec} s come from ?? lines alone` : ""}`,
   );
   for (const p of r.problems) console.log(`  NOTE: ${p}`);
   console.log(`  verify: ${r.verify}${r.verify === "OK" ? "" : `\n${r.verifyOutput}`}`);

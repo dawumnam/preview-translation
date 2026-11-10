@@ -70,7 +70,7 @@ export async function makeBrief(lines: ScriptLine[], model: string): Promise<Bri
 ${text}`;
   const r = await callJson<Brief>({
     model, parts: [{ text: prompt }], schema: SCHEMA, thinkingLevel: "LOW",
-    timeoutMs: 60_000, hedgeAfterMs: 15_000, attempts: 2, label: "brief",
+    timeoutMs: 60_000, hedgeAfterMs: [12_000, 24_000], attempts: 2, label: "brief",
   });
   if (!r.value || !Array.isArray(r.value.glossary) || !Array.isArray(r.value.cast)) return null;
   return { ...r.value, glossary: tidyGlossary(r.value.glossary, text) };
