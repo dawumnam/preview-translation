@@ -32,8 +32,10 @@ export const MODELS = {
   // 34 s, with no thinking tokens to pay for.
   listen: process.env.LISTEN_MODEL || "gemini-4-argon",
   // The brief is text work on the script, and listening waits for it.
-  // gemini-3.5-flash writes it in 7 s; Argon and 3.8 Flash need 15 to 40 s.
-  brief: process.env.BRIEF_MODEL || "gemini-3.5-flash",
+  // gemini-3.8-flash writes it in about 8 s; Argon needs 15 to 40 s.
+  // (gemini-3.5-flash is deprecated and is routed to gemini-3.6-flash; it has
+  // the same price and was not faster in repeat runs.)
+  brief: process.env.BRIEF_MODEL || "gemini-3.8-flash",
   fallback: process.env.FALLBACK_MODEL || "gemini-3.8-flash",
   judge: process.env.JUDGE_MODEL || "gemini-3.8-flash",
 };

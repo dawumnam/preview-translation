@@ -32,7 +32,7 @@ Tell the user the confidence counts, the ` ??` lines and the billable figure. If
 ```
 script ──► timeline of lines with TCs ──► listening windows (tens of seconds each)
 video  ──► audio decoded once (3 s) ─┐
-script ──► episode brief (7 s) ──────┤
+script ──► episode brief (8 s) ──────┤
                                      ▼
         passes A, B and C: every window of all three to the model at the
         same time, each with the script lines for that stretch
@@ -49,7 +49,7 @@ script ──► episode brief (7 s) ──────┤
 2. **TC typos repair themselves.** The footage runs forward, so a TC outside the longest non-decreasing run of TCs is a typo (1028: `140623` for `13623`; 1024: `3224` for `32624`; also the date in the title line). Such a TC stays in the document, but it is not used as a bound: the line is placed between the good TCs around it. The run prints a note for each marker this applies to. No plan file has to be edited.
 3. **Windows (`windows.ts`).** Markers that are close together share a window. The three passes cut the audio in three ways (windows of at most 100 s, 60 s and 80 s, with different margins), so a line at a window edge in one pass is in the middle of a window in the others. For 1104 this is 17 + 35 + 21 windows.
 4. **Audio (`audio.ts`).** ffmpeg decodes the full soundtrack once to 16 kHz mono PCM (3 s for a 2-hour mp4). A window is then a byte range with a WAV header, sent inline. There is no chunk file, no upload and no ASCII file name rule.
-5. **Brief (`brief.ts`).** One text call on the full script (`gemini-3.5-flash`, 7 s): who each speaker label is, and how the scriptwriter spells names and local words (`끌라비 (ტყლაპი)`). Each window gets these notes. Without them each window spells names in its own way; that was the most frequent fix in review. Scripts spell one word in several ways (1025: 끌라비 four times, 클라피 and 틀라비 once each). The model groups the spellings and the count in the script picks the one to use, so the output has one spelling for each name.
+5. **Brief (`brief.ts`).** One text call on the full script (`gemini-3.8-flash`, about 8 s): who each speaker label is, and how the scriptwriter spells names and local words (`끌라비 (ტყლაპი)`). Each window gets these notes. Without them each window spells names in its own way; that was the most frequent fix in review. Scripts spell one word in several ways (1025: 끌라비 four times, 클라피 and 틀라비 once each). The model groups the spellings and the count in the script picks the one to use, so the output has one spelling for each name.
 6. **Listen (`listen.ts`, `prompt.ts`).** The model gets the audio window and the script lines for the same stretch, each with its time in the clip. Requested markers are `▶N`; unrequested `@@` lines and the Korean lines are shown as they are. For each `▶N` the model returns the words it heard in the original language, the Korean translation, and the start and end time. It must not copy the coordinator's Korean line and must not fill a line from context alone (`heard: false`).
 7. **Decide (`reconcile.ts`).** For each line, every pair of the three readings is compared: close text is "same" with no call; other pairs go to a text model (same / detail / different). The reading with the most support wins; among equals the one of middle length is taken. Two neighbours whose times are in the wrong order are both flagged. Markers that share a window form a group, and a group is decided as soon as its own windows have answered.
 8. **Write.** `translations.json` has the same shape as before. `apply` and `verify.ts` are the same code as before.
@@ -84,9 +84,10 @@ Each choice below was measured on the eight Georgia episodes of October and Nove
 | Short or long windows? | No measurable difference: 45 s / 60 s / 100 s windows score 0.886 / 0.897 / 0.908, and shorter windows cost more because they overlap more. |
 | Should the model list all turns of the window before it fills the lines? | No. It placed every line of 0902 on the same audio as without the list, and the listening took twice as long. |
 | Does video help to tell the locals apart? | Not at 2 frames per second and low resolution: the speaker assignment did not become more stable. Not used. |
+| Which model for the brief? | `gemini-3.8-flash`: 8 to 9 s in two runs (16 s in one earlier run), and a glossary with the names in the local script. `gemini-4-argon` took 15 to 38 s. `gemini-3.5-flash` took 6 to 10 s, but it is deprecated and the API routes it to `gemini-3.6-flash`; the price is the same, and its glossary was a little shorter. The brief costs about 1 cent. |
 | Does the priority service tier make calls faster? | No. `serviceTier: "priority"` is accepted, but the median was not lower (29.5 s against 15.1 s on 12 windows in a busy hour). Not used. |
 
-Time: episode 1104 (96 lines, 2 h 33 min video) took 81 s and 88 s in two runs, both in hours when the model service was slow; it took 22 minutes on 10 November with the old pipeline run as wide as possible. The time is the brief (7 s), then the slowest listening window (25 to 77 s), then about 5 s to decide. The eight Georgia episodes together took 313 s; 1103 alone took 36 minutes before. Cost is about 1.6 USD for an episode at the November 2026 price of `gemini-4-argon` (the price doubles on 1 December 2026); the old pipeline spent more than that on Flash thinking tokens alone.
+Time: episode 1104 (96 lines, 2 h 33 min video) took 81 s and 88 s in two runs, both in hours when the model service was slow; it took 22 minutes on 10 November with the old pipeline run as wide as possible. The time is the brief (about 8 s), then the slowest listening window (25 to 77 s), then about 5 s to decide. The eight Georgia episodes together took 313 s; 1103 alone took 36 minutes before. Cost is about 1.6 USD for an episode at the November 2026 price of `gemini-4-argon` (the price doubles on 1 December 2026); the old pipeline spent more than that on Flash thinking tokens alone.
 
 ## Confidence
 
@@ -159,7 +160,7 @@ The spans are model output in tenths of a second, not an acoustic measurement. T
 - **Many 503 "high demand" answers:** the run goes on with backoff, copies and the fallback model, but it is slower. A later run is faster.
 - **`verify: FAILED`:** the delivered file is not written. The problems are printed. A count mismatch means `parseMarkers()` and `replaceMarkers()` disagree on a marker in this script; fix the parser, do not edit the output.
 - **A marker TC past the end of the media:** printed as a note. After the typo repair this means that the script and the video do not belong together, or the video is cut short.
-- **Other models:** `LISTEN_MODEL`, `FALLBACK_MODEL`, `JUDGE_MODEL`, `BRIEF_MODEL` override the defaults (`gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.8-flash`, `gemini-3.5-flash`). Run the benchmark before you change a default. `gemini-4-argon` ignores `temperature`.
+- **Other models:** `LISTEN_MODEL`, `FALLBACK_MODEL`, `JUDGE_MODEL`, `BRIEF_MODEL` override the defaults (`gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.8-flash`, `gemini-3.8-flash`). Run the benchmark before you change a default. `gemini-4-argon` ignores `temperature`.
 
 ## Conventions
 
