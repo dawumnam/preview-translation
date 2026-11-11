@@ -6,13 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Translator for Korean variety show production scripts. The input is a script (`.hwp` or `.hwpx`) and the video of the same day. The script has `@@(조)` / `@@(영)` / `@@(베)` markers where a person speaks a foreign language. The output is `<script name>_translated.hwpx`: the same document with the Korean translation written after each requested marker.
 
-**Only bold `@@` markers are translated.** A marker counts when its run's `charPrIDRef` is a bold char style in `header.xml` (`extractBoldIds()` → `parseMarkers()` / `replaceMarkers()`). Non-bold `@@` lines are left untouched; scripts carry many of them (0929: 139 bold, 186 non-bold). The run prints both counts.
+**Only the requested `@@` markers are translated.** The scriptwriter marks a requested line with a text style: bold, and in nearly all lines also underline and blue. A marker counts when the character style of its run (`charPrIDRef` → `header.xml`) matches the selection rule. The default rule is `bold`; `--select` gives another rule in plain words (see "Which lines are translated"). All other `@@` lines are left untouched; scripts carry many of them (0929: 139 requested, 186 not). The run prints the counts for each style before it listens.
 
 ## Run
 
 ```bash
 bun src/run.ts "<script>.hwp" <video>.mp4                    # one episode, 1 to 2 minutes
 bun src/run.ts a.hwp a.mp4 b.hwp b.mp4 c.hwp c.mp4            # several episodes at the same time
+bun src/run.ts "<script>.hwp" --list                          # only show which lines are selected: no video, no model call, no cost
+bun src/run.ts "<script>.hwp" <video>.mp4 --select "bold underline color"   # another rule for the requested lines
 ```
 
 Run it from the project root (bun reads `GEMINI_API_KEY` from `.env` there). It needs `ffmpeg`, and for `.hwp` input the Homebrew OpenJDK (`brew install openjdk`; the first run builds `tools/hwp2hwpx`).
@@ -22,10 +24,39 @@ The command does all the steps. There is no orchestration to do, no agent to sta
 - The translated file goes next to the script: `<script name>_translated.hwpx`. It is written only when `verify.ts` says OK.
 - All other files go to `<script dir>/<id>_work/`, where `<id>` is the first four digits in the file name (`1104_work`). Keep this directory until the editors have reviewed the result.
 - The last lines of the output give, for each episode: time for each step, confidence counts, each ` ??` line with the reason, the billable seconds, notes, and the verify result. Exit code 1 means that an episode failed or did not pass verify.
+- `--select "<words>"` sets which text style marks the requested lines (default `bold`). `--list` prints the selection and stops.
 - `--fresh` ignores saved listening passes. Without it, a second run with the same script and video uses the passes in the work directory again.
 - `--keep-audio` keeps the decoded audio (`audio.pcm`, about 115 MB for each hour).
 
-Tell the user the confidence counts, the ` ??` lines and the billable figure. If the user asks for a check of the output, see "After the run".
+Tell the user the confidence counts, the ` ??` lines, the billable figure and the doubtful lines of the selection, if there are some. If the user asks for a check of the output, see "After the run".
+
+## Which lines are translated
+
+The style of a line is exact data in the file, so code reads it (`select.ts`); no model is used. The rule is a list of plain words, and a line is selected when its style has every property that the rule names:
+
+| Word | Meaning |
+|---|---|
+| `bold`, `italic`, `underline`, `highlight` | the text has that property |
+| `color` | the text has a colour of any family (not black, grey or white) |
+| `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink` | the text has a colour of that family |
+| `#RRGGBB` | the text has exactly that colour |
+
+Words such as "lines with" and "and" are ignored, so `--select "lines with bold underline color"` is the same as `--select "bold underline color"`. An unknown word stops the command with the list of known words. The rule is saved in `<work-dir>/episode.json`, and `fix.ts`, `relisten.ts`, `verify.ts` and `apply.ts` use it from there.
+
+Before it listens, the run prints one row for each style that an `@@` line has, and the **doubtful lines**: lines with only a part of the usual style of the requested lines. Example (1028):
+
+```
+selection "bold": 157 of 366 @@ lines
+  translate   151  bold underline blue
+  translate     6  bold blue
+  leave       209  plain
+  doubtful lines: 6. They have only a part of the usual style "bold underline blue". Check them in the script:
+    TC 1:40:34  14034 검남 @@(조)  → will be translated, but: no underline
+```
+
+A doubtful line can be a slip of the scriptwriter's hand in one of two directions: a requested line where a part of the style was forgotten, or a line that got a part of the style by accident. Code cannot know the intent, and a model cannot know it too. Tell the user about these lines; the user or the client decides. In the 12 scripts of August to November 2026, 41 of 1,591 bold `@@` lines (2.6%) are doubtful, and no line has underline or a colour with no bold. A plain `@@` line between two requested lines is not doubtful: the writer selects lines, and each episode has up to 13 such lines.
+
+The default stays `bold` because it selects the same lines as all earlier deliveries. With `--select "bold underline color"` the 41 doubtful lines are not translated.
 
 ## How it works
 
@@ -112,11 +143,11 @@ On the eight Georgia episodes: 86% high, 9.5% medium, 4.2% low (40 of 949 lines;
 Each translation goes on its marker's own line, under the TC the scriptwriter typed. No line is added and no TC is changed. Earlier runs split long translations into new `TC<tab>charName<tab>@@(lang) text` lines; the editors reported that those TCs drifted from the video and made editing hard, so on 2026-11-01 we agreed to keep the TCs fixed.
 
 - `replace.ts` replaces only the text after `@@(lang)`. Old `translations.json` files with `segments` are joined into one line.
-- `verify.ts` fails if the output has a different count of bold `@@` lines than the source, or if the text before `@@` (TC, speaker) changed on any line.
+- `verify.ts` fails if the output has a different count of requested `@@` lines than the source, or if the text before `@@` (TC, speaker) changed on any line.
 
 ## Verify
 
-`verify.ts` is the check before delivery, and `run.ts` and `fix.ts` run it each time. It reads the output back and confirms: the zip is readable (adm-zip and `unzip -t`), every XML part is well-formed, every bold marker has its translation in order with the right speaker and language, no line was added and each line's TC and speaker are unchanged, low-confidence lines carry ` ??`, no text is double-escaped or slash-joined, and non-bold `@@` lines and all other script text are byte-identical to the source.
+`verify.ts` is the check before delivery, and `run.ts` and `fix.ts` run it each time. It reads the output back and confirms: the zip is readable (adm-zip and `unzip -t`), every XML part is well-formed, every requested marker has its translation in order with the right speaker and language, no line was added and each line's TC and speaker are unchanged, low-confidence lines carry ` ??`, no text is double-escaped or slash-joined, and the `@@` lines that are not requested and all other script text are byte-identical to the source.
 
 `verify.ts` checks the document, not the content. A run in which the model answered nothing would still pass it, so `run.ts` stops with an error, and writes no file, when more than a quarter of the listening windows got no answer.
 
@@ -130,8 +161,9 @@ The spans are model output in tenths of a second, not an acoustic measurement. T
 
 | File | Role |
 |------|------|
-| `src/run.ts` | CLI: script + video → translated HWPX, one or more episodes |
+| `src/run.ts` | CLI: script + video → translated HWPX, one or more episodes; `--list` shows the selection only |
 | `src/pipeline.ts` | `runEpisode()`: the steps for one episode, and the model names |
+| `src/select.ts` | Which `@@` lines are requested: the rule in plain words, the styles of the document, the doubtful lines |
 | `src/script.ts` | `parseScript()`: the script as a timeline; TC typo repair |
 | `src/windows.ts` | `planWindows()`: listening windows from the timeline |
 | `src/audio.ts` | Decode once, slice windows as WAV in memory |
@@ -158,6 +190,7 @@ The spans are model output in tenths of a second, not an acoustic measurement. T
 - **`GEMINI_API_KEY is not set`, or `the Gemini API refused the key`:** the key in `.env` is missing or no longer valid (this happened on 5 and 9 November). Ask the user for a new key. Nothing else can be done.
 - **`NOTE: window b012: blocked (OTHER) on …` or `no answer in 150 s`:** that window failed in that pass. The other two passes cut the audio in a different way, so the lines are still decided, at most as medium. If many lines of one scene are ` ??`, run the command again: a pass with a failed window is listened to again.
 - **Many 503 "high demand" answers:** the run goes on with backoff, copies and the fallback model, but it is slower. A later run is faster.
+- **`no @@ line has the style "bold"`:** the scriptwriter marked the requested lines in another way. The message lists the styles that the `@@` lines have. Run with `--list`, ask the user which style marks the requested lines, and give it with `--select`.
 - **`verify: FAILED`:** the delivered file is not written. The problems are printed. A count mismatch means `parseMarkers()` and `replaceMarkers()` disagree on a marker in this script; fix the parser, do not edit the output.
 - **A marker TC past the end of the media:** printed as a note. After the typo repair this means that the script and the video do not belong together, or the video is cut short.
 - **Other models:** `LISTEN_MODEL`, `FALLBACK_MODEL`, `JUDGE_MODEL`, `BRIEF_MODEL` override the defaults (`gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.8-flash`, `gemini-3.8-flash`). Run the benchmark before you change a default. `gemini-4-argon` ignores `temperature`.

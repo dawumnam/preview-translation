@@ -27,12 +27,12 @@ if (!workDir || wanted.length === 0 || wanted.some((n) => !Number.isInteger(n)))
   process.exit(1);
 }
 const read = <T>(f: string): T => JSON.parse(fs.readFileSync(path.join(workDir, f), "utf-8"));
-const ep = read<{ hwpx: string; media: string }>("episode.json");
+const ep = read<{ hwpx: string; media: string; select?: string }>("episode.json");
 const translations = read<Translation[]>("translations.json");
 const brief = fs.existsSync(path.join(workDir, "brief.json")) ? read<Brief>("brief.json") : null;
 
-const hwpx = extractHwpx(ep.hwpx);
-const { lines } = parseScript(hwpx.xml, hwpx.boldIds);
+const hwpx = extractHwpx(ep.hwpx, ep.select);
+const { lines } = parseScript(hwpx.xml, hwpx.selectedIds);
 const mediaDur = await mediaDuration(ep.media);
 const pcm = path.join(workDir, "audio.pcm");
 const hadAudio = fs.existsSync(pcm);

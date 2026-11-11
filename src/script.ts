@@ -61,8 +61,8 @@ function longestNonDecreasing(xs: number[]): Set<number> {
   return keep;
 }
 
-export function parseScript(xml: string, boldIds: Set<string>): { lines: ScriptLine[]; markers: Marker[] } {
-  const { markers } = parseMarkers(xml, boldIds);
+export function parseScript(xml: string, selectedIds: Set<string>): { lines: ScriptLine[]; markers: Marker[] } {
+  const { markers } = parseMarkers(xml, selectedIds);
   const paragraphs = [...xml.matchAll(/<hp:p[^>]*>.*?<\/hp:p>/g)].map((m) => m[0]);
 
   const lines: ScriptLine[] = [];
@@ -71,13 +71,13 @@ export function parseScript(xml: string, boldIds: Set<string>): { lines: ScriptL
 
   for (const para of paragraphs) {
     // Count this paragraph's markers the way parseMarkers does: one for each
-    // <hp:t> with "@@" inside a bold run.
-    let bold = 0;
+    // <hp:t> with "@@" inside a run in a requested style.
+    let wanted = 0;
     let plain = 0;
     for (const [, id, content] of para.matchAll(/<hp:run\s+charPrIDRef="(\d+)">(.*?)<\/hp:run>/gs)) {
       for (const [, t] of content.matchAll(/<hp:t>(.*?)<\/hp:t>/gs)) {
         if (!t.replace(/<[^>]+>/g, "").includes("@@")) continue;
-        if (boldIds.has(id)) bold++;
+        if (selectedIds.has(id)) wanted++;
         else plain++;
       }
     }
@@ -85,10 +85,10 @@ export function parseScript(xml: string, boldIds: Set<string>): { lines: ScriptL
     const raw = paragraphText(para);
     const fields = raw.split("\t").map((f) => f.trim());
     const flat = fields.filter(Boolean).join(" ");
-    if (!flat && bold === 0) continue;
+    if (!flat && wanted === 0) continue;
     if (/^-+$/.test(flat)) continue;
 
-    if (/^#(?!#)\s*\S/.test(flat) && bold === 0 && plain === 0) {
+    if (/^#(?!#)\s*\S/.test(flat) && wanted === 0 && plain === 0) {
       scene = flat.replace(/^#\s*/, "").trim();
       lines.push({ no: lines.length, tcPrev: 0, tcNext: Infinity, text: scene, kind: "scene", scene });
       continue;
@@ -111,9 +111,9 @@ export function parseScript(xml: string, boldIds: Set<string>): { lines: ScriptL
     }
 
     const base = { tc, tcPrev: 0, tcNext: Infinity, scene };
-    if (bold > 0) {
+    if (wanted > 0) {
       // One line for each marker on the paragraph (nearly always one).
-      for (let k = 0; k < bold; k++) {
+      for (let k = 0; k < wanted; k++) {
         const marker = markers[nextMarker++];
         if (!marker) break;
         lines.push({

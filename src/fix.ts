@@ -8,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import { extractHwpx, repackHwpx } from "./hwpx";
 import { replaceMarkers, type Translation } from "./replace";
+import { ruleText } from "./select";
 
 const args = process.argv.slice(2);
 const confAt = args.indexOf("--confidence");
@@ -18,7 +19,7 @@ if (!workDir || !Number.isInteger(marker) || !text?.trim() || !["high", "medium"
   console.error('Usage: bun src/fix.ts <work-dir> <marker> "<new Korean text>" [--confidence high|medium|low]');
   process.exit(1);
 }
-const ep: { hwpx: string; output: string } = JSON.parse(fs.readFileSync(path.join(workDir, "episode.json"), "utf-8"));
+const ep: { hwpx: string; output: string; select?: string } = JSON.parse(fs.readFileSync(path.join(workDir, "episode.json"), "utf-8"));
 const jsonPath = path.join(workDir, "translations.json");
 const translations: Translation[] = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
 const t = translations.find((x) => x.markerIndex === marker);
@@ -31,10 +32,10 @@ t.translation = text.trim();
 t.confidence = confidence;
 fs.writeFileSync(jsonPath, JSON.stringify(translations, null, 1));
 
-const hwpx = extractHwpx(ep.hwpx);
-const outPath = repackHwpx(hwpx, replaceMarkers(hwpx.xml, translations, hwpx.boldIds));
+const hwpx = extractHwpx(ep.hwpx, ep.select);
+const outPath = repackHwpx(hwpx, replaceMarkers(hwpx.xml, translations, hwpx.selectedIds));
 try {
-  const out = execFileSync("bun", [path.join(import.meta.dir, "verify.ts"), ep.hwpx], { cwd: path.resolve(import.meta.dir, "..") });
+  const out = execFileSync("bun", [path.join(import.meta.dir, "verify.ts"), ep.hwpx, "--select", ruleText(hwpx.rule)], { cwd: path.resolve(import.meta.dir, "..") });
   console.log(out.toString().trim());
 } catch (e: any) {
   console.error(`${e.stdout ?? ""}${e.stderr ?? ""}`);

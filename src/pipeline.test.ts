@@ -13,6 +13,7 @@ import { parseMarkers } from "./parser";
 import { buildFillPrompt } from "./prompt";
 import { decide, textSim } from "./reconcile";
 import { parseScript } from "./script";
+import { colorFamily, describeStyle, formatStyleReport, parseSelect, readStyles, ruleText, selectIds, styleReport } from "./select";
 import { DEFAULT_WINDOW, planWindows } from "./windows";
 
 const TAB = '<hp:tab width="1" leader="0" type="1"/>';
@@ -317,5 +318,88 @@ describe("model calls", () => {
     const r = await callJson({ ...base, attempts: 1 });
     expect(r.value).toBeUndefined();
     expect(r.error).toContain("MAX_TOKENS");
+  });
+});
+
+describe("line selection", () => {
+  const pr = (id: number, color: string, body: string) =>
+    `<hh:charPr id="${id}" height="1000" textColor="${color}" shadeColor="none" useFontSpace="0">${body}<hh:strikeout shape="NONE"/></hh:charPr>`;
+  const UL = '<hh:underline type="BOTTOM" shape="SOLID" color="#000000"/>';
+  const NO_UL = '<hh:underline type="NONE" shape="SOLID" color="#000000"/>';
+  const HEADER = [
+    pr(3, "#000000", NO_UL), // plain
+    pr(12, "#0000FF", `<hh:bold/>${UL}`), // the usual style of a requested line
+    pr(13, "#000000", `<hh:bold/>${NO_UL}`), // bold only
+    pr(14, "#FF0000", UL), // underline and red, not bold
+  ].join("");
+  const styles = readStyles(HEADER);
+  const line = (id: number, cells: string[]) => `<hp:p id="0"><hp:run charPrIDRef="${id}"><hp:t>${cells.join(TAB)}</hp:t></hp:run></hp:p>`;
+  const XML = doc([
+    line(12, ["1104"]),
+    line(3, ["0110", "피", "언제부터 하셨어요?"]),
+    line(12, ["", "코", "@@(조)"]),
+    line(12, ["", "모남", "@@(조)"]),
+    line(3, ["", "큐", "@@(조)"]),
+    line(13, ["0125", "모남", "@@(조)"]),
+    line(14, ["0140", "코", "@@(조)"]),
+  ]);
+
+  test("the styles of the document are read from the header", () => {
+    expect(describeStyle(styles.get("3")!)).toBe("plain");
+    expect(describeStyle(styles.get("12")!)).toBe("bold underline blue");
+    expect(describeStyle(styles.get("13")!)).toBe("bold");
+    expect(describeStyle(styles.get("14")!)).toBe("underline red");
+    expect(colorFamily("#000000")).toBe(null);
+    expect(colorFamily("#808080")).toBe(null);
+    expect(colorFamily("#1F4E9D")).toBe("blue");
+    expect(colorFamily("none")).toBe(null);
+  });
+
+  test("the rule is read from plain words", () => {
+    expect(ruleText(parseSelect("bold"))).toBe("bold");
+    expect(ruleText(parseSelect("lines with Bold, underline and color"))).toBe("bold underline color");
+    expect(ruleText(parseSelect("underlined blue bold"))).toBe("bold underline blue");
+    expect(ruleText(parseSelect("bold color red"))).toBe("bold red");
+    expect(ruleText(parseSelect("bold #0000ff"))).toBe("bold #0000FF");
+    expect(() => parseSelect("bold sparkly")).toThrow("sparkly");
+    expect(() => parseSelect("blue red")).toThrow("two colours");
+    expect(() => parseSelect("lines with")).toThrow("names no style");
+  });
+
+  test("a style matches when it has every property of the rule", () => {
+    const ids = (words: string) => [...selectIds(styles, parseSelect(words))].sort();
+    expect(ids("bold")).toEqual(["12", "13"]);
+    expect(ids("bold underline color")).toEqual(["12"]);
+    expect(ids("bold underline blue")).toEqual(["12"]);
+    expect(ids("bold red")).toEqual([]);
+    expect(ids("underline")).toEqual(["12", "14"]);
+    expect(ids("color")).toEqual(["12", "14"]);
+    expect(ids("#0000FF")).toEqual(["12"]);
+  });
+
+  test("the selection and the marker parser count the same lines", () => {
+    for (const words of ["bold", "bold underline color", "underline"]) {
+      const rule = parseSelect(words);
+      expect(styleReport(XML, styles, rule).selected).toBe(parseMarkers(XML, selectIds(styles, rule)).markers.length);
+    }
+  });
+
+  test("lines with only a part of the usual style are listed, in the two directions", () => {
+    const wide = styleReport(XML, styles, parseSelect("bold"));
+    expect([wide.selected, wide.other, wide.usual]).toEqual([3, 2, "bold underline blue"]);
+    expect(wide.doubtful.map((d) => [d.tc, d.selected, d.why])).toEqual([
+      ["1:25", true, "will be translated, but: no underline, no blue"],
+      ["1:40", false, "will not be translated, but it has: underline, red"],
+    ]);
+    const narrow = styleReport(XML, styles, parseSelect("bold underline color"));
+    expect([narrow.selected, narrow.other]).toEqual([2, 3]);
+    expect(narrow.doubtful.map((d) => [d.selected, d.why])).toEqual([
+      [false, "will not be translated, but it has: bold"],
+      [false, "will not be translated, but it has: underline, red"],
+    ]);
+    // A plain @@ line is never doubtful: the writer selects lines, and most are not requested.
+    expect(wide.doubtful.some((d) => d.style === "plain")).toBe(false);
+    expect(formatStyleReport(wide)[0]).toBe('selection "bold": 3 of 5 @@ lines');
+    expect(formatStyleReport(styleReport(XML, styles, parseSelect("bold green"))).join("\n")).toContain("No @@ line has this style");
   });
 });

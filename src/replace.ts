@@ -45,15 +45,15 @@ export function translationText(t: Translation): string {
 export function replaceMarkers(
   xml: string,
   translations: Translation[],
-  boldIds: Set<string>,
+  selectedIds: Set<string>,
 ): string {
   const translationMap = new Map<number, Translation>();
   for (const t of translations) {
     translationMap.set(t.markerIndex, t);
   }
 
-  // Match bold <hp:run> containing @@ markers (with optional language code) in document order
-  const idPattern = [...boldIds].join("|");
+  // Match each <hp:run> in a requested style that contains an @@ marker (with optional language code) in document order
+  const idPattern = [...selectedIds].join("|");
   const regex = new RegExp(
     `(<hp:run\\s+charPrIDRef="(?:${idPattern})"><hp:t>(?:[^<]|<hp:tab[^/]*\\/>)*)` +
     `(@@(?:\\([^)]+\\))?)(?:[^<]|<hp:tab[^/]*\\/>)*(</hp:t>)`,

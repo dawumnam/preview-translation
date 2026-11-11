@@ -51,7 +51,7 @@ export function formatTimestamp(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function parseMarkers(xml: string, boldIds?: Set<string>): {
+export function parseMarkers(xml: string, selectedIds?: Set<string>): {
   markers: Marker[];
   scenes: SceneChunk[];
 } {
@@ -74,8 +74,8 @@ export function parseMarkers(xml: string, boldIds?: Set<string>): {
     }
   >();
 
-  // Use provided boldIds, or fall back to detecting bold IDs from @@ runs
-  const markerStyleIds = boldIds ?? new Set<string>();
+  // The ids of the character styles that mark a requested line (see select.ts).
+  const markerStyleIds = selectedIds ?? new Set<string>();
 
   let markerIndex = 0;
 
@@ -199,9 +199,9 @@ export function parseMarkers(xml: string, boldIds?: Set<string>): {
               scene.endTime = Math.max(scene.endTime, end);
             }
           } else if (currentScene && sceneMap.has(currentScene)) {
-            // A non-bold @@ line is not translated, but it still takes a turn
+            // An @@ line that is not requested is not translated, but it still takes a turn
             // in the exchange. Keep it in the context so a mapper does not
-            // give its speech to a neighbouring bold marker.
+            // give its speech to a neighbouring requested marker.
             sceneMap.get(currentScene)!.context.push(`${fullClean} [not requested]`);
           }
           continue;

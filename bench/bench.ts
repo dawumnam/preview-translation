@@ -81,7 +81,7 @@ function build() {
   const items: Item[] = [];
   for (const e of episodes()) {
     const hw = extractHwpx(e.script);
-    const found = keyLines(parseScript(hw.xml, hw.boldIds).lines);
+    const found = keyLines(parseScript(hw.xml, hw.selectedIds).lines);
     for (const k of found) items.push({ id: `${e.id}:${k.marker}`, ep: e.id, ...k });
     console.log(`${e.id}: ${found.length} lines with an answer key (A ${found.filter((k) => k.type === "A").length}, B ${found.filter((k) => k.type === "B").length})`);
   }

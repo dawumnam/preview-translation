@@ -1,33 +1,31 @@
 import AdmZip from "adm-zip";
 import path from "path";
+import { DEFAULT_SELECT, parseSelect, readStyles, selectIds, type CharStyle, type Rule } from "./select";
 
 export interface HwpxData {
   zip: AdmZip;
   xml: string;
   filePath: string;
-  boldIds: Set<string>;
+  /** The character styles of the document, by id. */
+  styles: Map<string, CharStyle>;
+  /** Which @@ lines are requested, and the ids of the styles that match. */
+  rule: Rule;
+  selectedIds: Set<string>;
 }
 
-export function extractBoldIds(zip: AdmZip): Set<string> {
-  const header = zip.getEntry("Contents/header.xml");
-  if (!header) return new Set();
-  const headerXml = header.getData().toString("utf-8");
-  const ids = new Set<string>();
-  const re = /<hh:charPr\s+id="(\d+)"[\s\S]*?<\/hh:charPr>/g;
-  let m;
-  while ((m = re.exec(headerXml))) {
-    if (m[0].includes("<hh:bold")) ids.add(m[1]);
-  }
-  return ids;
-}
-
-export function extractHwpx(filePath: string): HwpxData {
+/**
+ * Opens a script. `select` says in plain words which text style marks the
+ * requested @@ lines (see select.ts). The default is "bold".
+ */
+export function extractHwpx(filePath: string, select: string = DEFAULT_SELECT): HwpxData {
   const zip = new AdmZip(filePath);
   const entry = zip.getEntry("Contents/section0.xml");
   if (!entry) throw new Error("Contents/section0.xml not found in HWPX");
   const xml = entry.getData().toString("utf-8");
-  const boldIds = extractBoldIds(zip);
-  return { zip, xml, filePath, boldIds };
+  const header = zip.getEntry("Contents/header.xml");
+  const styles = readStyles(header ? header.getData().toString("utf-8") : "");
+  const rule = parseSelect(select);
+  return { zip, xml, filePath, styles, rule, selectedIds: selectIds(styles, rule) };
 }
 
 export function repackHwpx(data: HwpxData, newXml: string): string {

@@ -1,8 +1,10 @@
 // CLI: verify a translated HWPX against its source and translations.json.
 //
-//   bun src/verify.ts <hwpx> [translated.hwpx] [translations.json]
+//   bun src/verify.ts <hwpx> [translated.hwpx] [translations.json] [--select "<words>"]
 //
 // Defaults: <name>_translated.hwpx and translations.json next to <hwpx>.
+// --select says which text style marks the requested @@ lines. Default: the
+// rule that run.ts saved in episode.json next to <hwpx>, else "bold".
 // Exits non-zero on any problem.
 import fs from "fs";
 import path from "path";
@@ -10,22 +12,25 @@ import AdmZip from "adm-zip";
 import { extractHwpx } from "./hwpx";
 import { parseMarkers } from "./parser";
 import { translationText, type Translation } from "./replace";
+import { ruleText, selectFor, takeSelectArg } from "./select";
 
-const srcPath = process.argv[2];
+const argv = process.argv.slice(2);
+const selectArg = takeSelectArg(argv);
+const srcPath = argv[0];
 if (!srcPath) {
-  console.error("Usage: bun src/verify.ts <hwpx> [translated.hwpx] [translations.json]");
+  console.error('Usage: bun src/verify.ts <hwpx> [translated.hwpx] [translations.json] [--select "<words>"]');
   process.exit(1);
 }
 const ext = path.extname(srcPath);
-const outPath = process.argv[3] ?? `${srcPath.slice(0, -ext.length)}_translated${ext}`;
-const jsonPath = process.argv[4] ?? path.join(path.dirname(srcPath), "translations.json");
+const outPath = argv[1] ?? `${srcPath.slice(0, -ext.length)}_translated${ext}`;
+const jsonPath = argv[2] ?? path.join(path.dirname(srcPath), "translations.json");
 
 const problems: string[] = [];
 const MAX_LISTED = 20;
 const problem = (msg: string) => problems.push(msg);
 
 // --- 1. Zip integrity: adm-zip must read it back, and unzip must agree.
-const src = extractHwpx(srcPath);
+const src = extractHwpx(srcPath, selectFor(srcPath, selectArg));
 let outXml: string;
 try {
   outXml = extractHwpx(outPath).xml;
@@ -54,10 +59,10 @@ if (Bun.which("xmllint")) {
   console.warn("Warning: xmllint not found — XML well-formedness not checked");
 }
 
-// --- 3. Every bold marker has a matching translation entry.
+// --- 3. Every requested marker has a matching translation entry.
 const translations: Translation[] = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
 const byIndex = new Map(translations.map((t) => [t.markerIndex, t]));
-const srcMarkers = parseMarkers(src.xml, src.boldIds).markers;
+const srcMarkers = parseMarkers(src.xml, src.selectedIds).markers;
 for (const m of srcMarkers) {
   const t = byIndex.get(m.index);
   if (!t) problem(`marker ${m.index} (${m.charName} ${m.rawText}) has no translation`);
@@ -65,16 +70,16 @@ for (const m of srcMarkers) {
     problem(`marker ${m.index}: translation is ${t.language}/${t.charName}, script has ${m.language}/${m.charName}`);
 }
 if (translations.length !== srcMarkers.length)
-  problem(`${translations.length} translations for ${srcMarkers.length} bold markers`);
+  problem(`${translations.length} translations for ${srcMarkers.length} requested markers`);
 
-// --- 4. Output bold @@ lines match the source markers one to one, in order:
+// --- 4. The requested @@ lines of the output match the source markers one to one, in order:
 // right text (with " ??" for low confidence), speaker, language, and the
 // script's own TC unchanged. No TC line is added.
 const decode = (s: string) =>
   s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-const outMarkers = parseMarkers(outXml, src.boldIds).markers;
+const outMarkers = parseMarkers(outXml, src.selectedIds).markers;
 if (outMarkers.length !== srcMarkers.length)
-  problem(`output has ${outMarkers.length} bold @@ lines, source has ${srcMarkers.length} — TC lines were added or lost`);
+  problem(`output has ${outMarkers.length} requested @@ lines, source has ${srcMarkers.length} — TC lines were added or lost`);
 for (let i = 0; i < Math.min(outMarkers.length, srcMarkers.length); i++) {
   const o = outMarkers[i];
   const m = srcMarkers[i];
@@ -94,17 +99,17 @@ for (let i = 0; i < Math.min(outMarkers.length, srcMarkers.length); i++) {
   if (/\s\/\s/.test(got)) problem(`${where}: " / " join in text`);
 }
 
-// --- 5. Non-bold @@ runs are untouched (line-layout cache aside, which
+// --- 5. @@ runs that are not requested are untouched (line-layout cache aside, which
 // replace.ts strips everywhere).
 const stripLayout = (s: string) => s.replace(/<hp:linesegarray>[\s\S]*?<\/hp:linesegarray>/g, "");
 const nonBold = (xml: string) =>
   [...xml.matchAll(/<hp:run\s+charPrIDRef="(\d+)">(.*?)<\/hp:run>/gs)]
-    .filter(([, id, content]) => content.includes("@@") && !src.boldIds.has(id))
+    .filter(([, id, content]) => content.includes("@@") && !src.selectedIds.has(id))
     .map(([, , content]) => stripLayout(content));
 const nbSrc = nonBold(src.xml);
 const nbOut = nonBold(outXml);
-if (nbSrc.length !== nbOut.length) problem(`non-bold @@ runs: ${nbSrc.length} in source, ${nbOut.length} in output`);
-else nbSrc.forEach((r, i) => r !== nbOut[i] && problem(`non-bold @@ run ${i} changed`));
+if (nbSrc.length !== nbOut.length) problem(`@@ runs that are not requested: ${nbSrc.length} in source, ${nbOut.length} in output`);
+else nbSrc.forEach((r, i) => r !== nbOut[i] && problem(`@@ run ${i} that is not requested changed`));
 
 // --- 6. All other text is unchanged.
 const plainText = (xml: string) =>
@@ -115,8 +120,8 @@ if (plainText(src.xml) !== plainText(outXml)) problem("non-marker text differs b
 const conf = { high: 0, medium: 0, low: 0 } as Record<string, number>;
 for (const t of translations) conf[t.confidence] = (conf[t.confidence] ?? 0) + 1;
 console.log(`${path.basename(outPath)}`);
-console.log(`  bold markers ${srcMarkers.length}, translated ${translations.length}, output lines ${outMarkers.length} (must equal bold markers)`);
-console.log(`  non-bold @@ untouched: ${nbSrc.length}`);
+console.log(`  requested markers ${srcMarkers.length} (selection "${ruleText(src.rule)}"), translated ${translations.length}, output lines ${outMarkers.length} (must equal requested markers)`);
+console.log(`  other @@ lines untouched: ${nbSrc.length}`);
 console.log(`  confidence high/medium/low: ${conf.high}/${conf.medium}/${conf.low} (low ones marked ??)`);
 if (problems.length) {
   console.error(`\n${problems.length} problem(s):`);

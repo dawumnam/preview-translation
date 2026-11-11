@@ -1,6 +1,12 @@
-// CLI: translate the bold @@ lines of one or more scripts.
+// CLI: translate the requested @@ lines of one or more scripts.
 //
-//   bun src/run.ts <script.hwp|.hwpx> <video.mp4|.mp3> [<script2> <video2> ...] [--fresh] [--keep-audio]
+//   bun src/run.ts <script.hwp|.hwpx> <video.mp4|.mp3> [<script2> <video2> ...] [--select "<words>"] [--fresh] [--keep-audio]
+//   bun src/run.ts <script> [<script2> ...] --list [--select "<words>"]
+//
+// --select says in plain words which text style marks the requested lines:
+// "bold" (the default), "bold underline color", "bold underline blue" ...
+// --list prints which lines the rule selects and stops. It needs no video and
+// makes no model call.
 //
 // Each episode runs at the same time as the others. The translated file is
 // written next to the script as <script name>_translated.hwpx; everything else
@@ -8,17 +14,54 @@
 import fs from "fs";
 import path from "path";
 import { usageReport } from "./llm";
-import { runEpisode, type EpisodeReport } from "./pipeline";
+import { listSelection, runEpisode, type EpisodeReport } from "./pipeline";
+import { DEFAULT_SELECT, formatStyleReport, parseSelect, ruleText, takeSelectArg } from "./select";
 
+const USAGE =
+  'Usage: bun src/run.ts <script.hwp|.hwpx> <video> [<script2> <video2> ...] [--select "<words>"] [--fresh] [--keep-audio]\n' +
+  '       bun src/run.ts <script> [<script2> ...] --list [--select "<words>"]';
 const args = process.argv.slice(2);
+let select = DEFAULT_SELECT;
+try {
+  select = ruleText(parseSelect(takeSelectArg(args) ?? DEFAULT_SELECT));
+} catch (e: any) {
+  console.error(`${e.message}\n${USAGE}`);
+  process.exit(1);
+}
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const files = args.filter((a) => !a.startsWith("--"));
-const USAGE = "Usage: bun src/run.ts <script.hwp|.hwpx> <video> [<script2> <video2> ...] [--fresh] [--keep-audio]";
+const unknown = [...flags].filter((f) => !["--fresh", "--keep-audio", "--list"].includes(f));
+if (unknown.length) {
+  console.error(`Unknown option: ${unknown.join(" ")}\n${USAGE}`);
+  process.exit(1);
+}
+const isScript = (f: string) => /\.hwpx?$/i.test(f);
+
+if (flags.has("--list")) {
+  // Only the selection: no video is read and no model is called.
+  const scripts = files.filter(isScript);
+  if (scripts.length === 0) {
+    console.error(USAGE);
+    process.exit(1);
+  }
+  let none = 0;
+  for (const script of scripts) {
+    if (!fs.existsSync(script)) {
+      console.error(`File not found: ${script}`);
+      process.exit(1);
+    }
+    const { id, styles } = await listSelection(script, select);
+    console.log(`\n${id} (${path.basename(script)})`);
+    for (const line of formatStyleReport(styles, Infinity)) console.log(`  ${line}`);
+    if (styles.selected === 0) none++;
+  }
+  process.exit(none ? 1 : 0);
+}
+
 if (files.length === 0 || files.length % 2 !== 0) {
   console.error(USAGE);
   process.exit(1);
 }
-const isScript = (f: string) => /\.hwpx?$/i.test(f);
 const pairs: { script: string; media: string }[] = [];
 for (let i = 0; i < files.length; i += 2) {
   // Either order within a pair is accepted.
@@ -43,7 +86,7 @@ const t0 = performance.now();
 const results = await Promise.all(
   pairs.map(async (p) => {
     try {
-      return await runEpisode({ ...p, fresh: flags.has("--fresh"), keepAudio: flags.has("--keep-audio") });
+      return await runEpisode({ ...p, select, fresh: flags.has("--fresh"), keepAudio: flags.has("--keep-audio") });
     } catch (e: any) {
       console.error(`[${path.basename(p.script)}] FAILED: ${e?.message ?? e}`);
       return null;
@@ -74,7 +117,8 @@ process.exit(bad ? 1 : 0);
 
 function print(r: EpisodeReport) {
   const s = r.seconds;
-  console.log(`\n${r.id}: ${r.markers} lines translated, ${r.unrequested} non-bold @@ lines left as they are`);
+  console.log(`\n${r.id}: ${r.markers} lines translated, ${r.styles.other} other @@ lines left as they are`);
+  for (const line of formatStyleReport(r.styles)) console.log(`  ${line}`);
   console.log(
     `  time ${s.total} s: decode ${s.decode}, brief ${s.brief}, all ${r.windows.join("+")} windows heard after ${s.listen}, ` +
       `all lines decided after ${s.decided}, apply+verify ${s["apply+verify"]}`,

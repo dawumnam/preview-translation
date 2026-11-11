@@ -21,6 +21,7 @@ import { collect, listenOne, type Candidate, type ListenResult, type PassConfig,
 import { decide, type Decision } from "./reconcile";
 import { replaceMarkers, type Translation } from "./replace";
 import { clock, parseScript, type ScriptLine } from "./script";
+import { DEFAULT_SELECT, formatStyleReport, parseSelect, ruleText, styleReport, type StyleReport } from "./select";
 import { DEFAULT_WINDOW, planWindows, type ListenWindow } from "./windows";
 
 const execFileAsync = promisify(execFile);
@@ -47,6 +48,8 @@ export interface EpisodeOptions {
   media: string;
   /** Where intermediate files go. Default: <script dir>/<id>_work. */
   workDir?: string;
+  /** Which text style marks the requested @@ lines, in plain words. Default: "bold". */
+  select?: string;
   /** Ignore saved passes and listen again. */
   fresh?: boolean;
   /** Keep the decoded audio after the run. */
@@ -62,6 +65,8 @@ export interface EpisodeReport {
   workDir: string;
   markers: number;
   unrequested: number;
+  /** The style of every @@ line, and the lines with only a part of the usual style. */
+  styles: StyleReport;
   /** Windows in each pass. */
   windows: number[];
   confidence: { high: number; medium: number; low: number };
@@ -129,8 +134,36 @@ function unionSeconds(spans: [number, number][]): number {
   return Math.round((cur ? total + cur[1] - cur[0] : total) * 10) / 10;
 }
 
+/** The script as .hwpx in the work directory (converted when it came as .hwp). */
+async function workingCopy(scriptPath: string, workDir: string, id: string): Promise<string> {
+  fs.mkdirSync(workDir, { recursive: true });
+  const hwpxPath = path.join(workDir, `${id}.hwpx`);
+  const srcTime = fs.statSync(scriptPath).mtimeMs;
+  if (fs.existsSync(hwpxPath) && fs.statSync(hwpxPath).mtimeMs >= srcTime) return hwpxPath;
+  if (path.extname(scriptPath).toLowerCase() === ".hwp") {
+    await execFileAsync(path.join(ROOT, "tools/hwp2hwpx/convert.sh"), [scriptPath, hwpxPath]);
+  } else {
+    fs.copyFileSync(scriptPath, hwpxPath);
+  }
+  return hwpxPath;
+}
+
+/**
+ * Which @@ lines the rule selects in a script, with no listening and no model
+ * call. A .hwp script is converted into its work directory first.
+ */
+export async function listSelection(script: string, select: string = DEFAULT_SELECT): Promise<{ id: string; styles: StyleReport }> {
+  const id = episodeId(script);
+  const scriptPath = path.resolve(script);
+  const hwpxPath =
+    path.extname(scriptPath).toLowerCase() === ".hwp" ? await workingCopy(scriptPath, freeWorkDir(scriptPath, id), id) : scriptPath;
+  const hwpx = extractHwpx(hwpxPath, select);
+  return { id, styles: styleReport(hwpx.xml, hwpx.styles, hwpx.rule) };
+}
+
 export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
   const id = episodeId(o.script);
+  const select = ruleText(parseSelect(o.select ?? DEFAULT_SELECT));
   const log = o.log ?? ((m: string) => console.error(`[${id}] ${m}`));
   const scriptPath = path.resolve(o.script);
   const mediaPath = path.resolve(o.media);
@@ -163,29 +196,28 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
   };
 
   // --- Script: a working copy as <id>.hwpx (converted when it came as .hwp).
-  const hwpxPath = path.join(workDir, `${id}.hwpx`);
-  await timed("convert", async () => {
-    const srcTime = fs.statSync(scriptPath).mtimeMs;
-    if (fs.existsSync(hwpxPath) && fs.statSync(hwpxPath).mtimeMs >= srcTime) return;
-    if (path.extname(scriptPath).toLowerCase() === ".hwp") {
-      await execFileAsync(path.join(ROOT, "tools/hwp2hwpx/convert.sh"), [scriptPath, hwpxPath]);
-    } else {
-      fs.copyFileSync(scriptPath, hwpxPath);
-    }
-  });
+  const hwpxPath = await timed("convert", () => workingCopy(scriptPath, workDir, id));
   const stem = path.basename(scriptPath, path.extname(scriptPath));
   const output = path.join(path.dirname(scriptPath), `${stem}_translated.hwpx`);
   // What fix.ts and relisten.ts need to find their way back.
-  save("episode.json", { id, script: scriptPath, media: mediaPath, hwpx: hwpxPath, output });
-  const hwpx = extractHwpx(hwpxPath);
-  const { lines, markers } = parseScript(hwpx.xml, hwpx.boldIds);
+  save("episode.json", { id, script: scriptPath, media: mediaPath, hwpx: hwpxPath, output, select });
+  const hwpx = extractHwpx(hwpxPath, select);
+  const { lines, markers } = parseScript(hwpx.xml, hwpx.selectedIds);
   const unrequested = lines.filter((l) => l.kind === "unrequested").length;
-  if (markers.length === 0) throw new Error(`${path.basename(scriptPath)}: no bold @@ marker found`);
+  // Which lines are requested is known before any listening. Show it now, so
+  // that a wrong selection is seen at once and not after the run.
+  const styles = styleReport(hwpx.xml, hwpx.styles, hwpx.rule);
+  for (const line of formatStyleReport(styles)) log(line);
+  if (markers.length === 0) {
+    throw new Error(
+      `${path.basename(scriptPath)}: no @@ line has the style "${select}". The @@ lines of this script have these styles: ` +
+        `${styles.rows.map((r) => `${r.style} (${r.lines})`).join(", ") || "none"}. Give the style with --select.`,
+    );
+  }
   const suspect = lines.filter((l) => l.tcSuspect !== undefined && l.kind === "marker");
   for (const l of suspect) {
     log(`marker ${l.marker!.index} has a TC out of sequence (${clock(l.tcSuspect!)}); it is placed between ${clock(l.tcPrev)} and ${Number.isFinite(l.tcNext) ? clock(l.tcNext) : "the end"}`);
   }
-  log(`${markers.length} bold markers, ${unrequested} non-bold @@ lines left as they are`);
 
   // --- Audio and brief, at the same time.
   const pcm = path.join(workDir, "audio.pcm");
@@ -346,9 +378,9 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
   let verify = "FAILED" as "OK" | "FAILED";
   let verifyOutput = "";
   await timed("apply+verify", async () => {
-    const outPath = repackHwpx(hwpx, replaceMarkers(hwpx.xml, translations, hwpx.boldIds));
+    const outPath = repackHwpx(hwpx, replaceMarkers(hwpx.xml, translations, hwpx.selectedIds));
     try {
-      const r = await execFileAsync("bun", [path.join(ROOT, "src/verify.ts"), hwpxPath], { cwd: ROOT });
+      const r = await execFileAsync("bun", [path.join(ROOT, "src/verify.ts"), hwpxPath, "--select", select], { cwd: ROOT });
       verify = "OK";
       verifyOutput = r.stdout.trim();
     } catch (e: any) {
@@ -366,7 +398,7 @@ export async function runEpisode(o: EpisodeOptions): Promise<EpisodeReport> {
   seconds.total = Math.round((performance.now() - t0) / 100) / 10;
   const report: EpisodeReport = {
     id, output, workDir,
-    markers: markers.length, unrequested,
+    markers: markers.length, unrequested, styles,
     windows: plans.map((p) => p.windows.length),
     confidence: conf,
     flagged: translations
