@@ -49,11 +49,12 @@ Graded by the three-vote Gemini judge in `bench.ts`:
 | Method | Score | Notes |
 |---|---|---|
 | Earlier deliveries (3 × STT at HIGH thinking, mapper agents, probes, review) | 0.901 | made with the answer keys visible |
+| Three passes at once, majority vote (current design) | 0.908 | answer keys hidden; 201 full, 21 partial, 11 zero; high lines 89% full score |
 | Two passes + three focused listens of disputed lines (an earlier version) | 0.891 | answer keys hidden; high lines 85% full score, medium lines 58% |
 | One script-guided pass, `gemini-4-argon` | 0.87–0.91 | eight runs; thinking LOW 0.901, MEDIUM 0.87–0.91, HIGH 0.908; windows of 45 / 60 / 100 s: 0.886 / 0.897 / 0.908 |
 | One script-guided pass, `gemini-3.8-flash` | 0.85 | LOW 0.852, MEDIUM 0.845 |
 
-The current design (three passes at once, majority vote) ran on all eight episodes, but the Google project reached its spending cap before the Gemini judge could score it. Three Claude graders scored it in its place, blind and in pairs with two other results (same rubric, the three systems in a shuffled order for each line):
+Three Claude graders also scored three of these results, blind and in pairs (same rubric, the three systems in a shuffled order for each line):
 
 | Method | Score | Full / partial / zero |
 |---|---|---|
@@ -61,7 +62,7 @@ The current design (three passes at once, majority vote) ran on all eight episod
 | Three passes, majority vote (current) | 0.933 | 208 / 19 / 6 |
 | Two passes + focused listens | 0.931 | 207 / 20 / 6 |
 
-Line by line, the current design is better than the earlier deliveries on 7 lines and worse on 7. The Claude graders are more lenient than the Gemini judge, so compare scores only inside one table. To get the Gemini-judge score of the current design, run `bun bench/bench.ts run <name>` when the cap is raised.
+Line by line, the current design is better than the earlier deliveries on 7 lines and worse on 7. The Claude graders are more lenient than the Gemini judge, so compare scores only inside one table.
 
 `compare` results: the two-round version against the earlier deliveries: 69% same, 21% detail, 10% different. Two runs of that version against each other: 7 to 9% different, nearly all on lines where the passes did not agree.
 

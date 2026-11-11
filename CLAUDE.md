@@ -69,7 +69,7 @@ Each choice below was measured on the eight Georgia episodes of October and Nove
 
 | Question | Result |
 |---|---|
-| Is the result as good as before? | Yes, on the 233 benchmark lines. Graded blind and in pairs by Claude: earlier deliveries 0.933, this design 0.933 (better on 7 lines, worse on 7). The earlier deliveries had the answer keys visible and were made with probes and review; this design had the keys hidden. With the Gemini judge the two-round version of this design scored 0.891 against 0.901 for the earlier deliveries: 4 lines, inside the noise (one pass of the same settings gave 0.87 to 0.91 in eight runs). |
+| Is the result as good as before? | Yes, on the 233 benchmark lines. Gemini judge: this design 0.908, earlier deliveries 0.901. Graded blind and in pairs by Claude: 0.933 and 0.933 (better on 7 lines, worse on 7). The earlier deliveries had the answer keys visible and were made with probes and review; this design had the keys hidden. A difference of this size is inside the noise: one pass of the same settings gave 0.87 to 0.91 in eight runs. |
 | Which model hears Georgian best? (blind, short clips, 80 lines) | `gemini-4-argon` 0.89–0.90 at any thinking level, 8 s for each call. `gemini-3.8-flash`: LOW 0.84 (6 s), MEDIUM 0.84 (12 s), HIGH 0.89 (34 s median, 127 s at the 90th percentile, 5,400 thinking tokens for a 10-second clip). `gemini-3.1-pro-preview` 0.80–0.81. |
 | Which model for the guided pass? | `gemini-4-argon` 0.87–0.91; `gemini-3.8-flash` 0.85 (LOW 0.852, MEDIUM 0.845), and Flash had windows blocked (`blockReason: OTHER`) where Argon had none. |
 | Does more thinking help? | Not for Argon: LOW / MEDIUM / HIGH = 0.901 / 0.87–0.91 / 0.908, and HIGH takes twice the time. The old pipeline needed HIGH because it used Flash. |
@@ -86,7 +86,7 @@ Each choice below was measured on the eight Georgia episodes of October and Nove
 | Does video help to tell the locals apart? | Not at 2 frames per second and low resolution: the speaker assignment did not become more stable. Not used. |
 | Does the priority service tier make calls faster? | No. `serviceTier: "priority"` is accepted, but the median was not lower (29.5 s against 15.1 s on 12 windows in a busy hour). Not used. |
 
-Time: episode 1104 (96 lines, 2 h 33 min video) took 81 s in an hour when the model service was slow; it took 22 minutes on 10 November with the old pipeline run as wide as possible. The time is the brief (7 s), then the slowest listening window (25 to 70 s), then a few seconds to decide. The eight Georgia episodes together took 313 s; 1103 alone took 36 minutes before. Cost is about 1.6 USD for an episode at the November 2026 price of `gemini-4-argon` (the price doubles on 1 December 2026); the old pipeline spent more than that on Flash thinking tokens alone.
+Time: episode 1104 (96 lines, 2 h 33 min video) took 81 s and 88 s in two runs, both in hours when the model service was slow; it took 22 minutes on 10 November with the old pipeline run as wide as possible. The time is the brief (7 s), then the slowest listening window (25 to 77 s), then about 5 s to decide. The eight Georgia episodes together took 313 s; 1103 alone took 36 minutes before. Cost is about 1.6 USD for an episode at the November 2026 price of `gemini-4-argon` (the price doubles on 1 December 2026); the old pipeline spent more than that on Flash thinking tokens alone.
 
 ## Confidence
 
