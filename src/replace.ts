@@ -1,4 +1,20 @@
-import type { Translation } from "./translate";
+export interface TranslationSegment {
+  timestamp: number; // seconds from the start of the media
+  text: string;
+}
+
+export interface Translation {
+  markerIndex: number;
+  language: string;
+  charName: string;
+  timestamp: number;
+  scene: string;
+  speech_start?: number; // seconds: the audio this translation was written from
+  speech_end?: number; //   (the billing basis)
+  translation?: string; // the Korean text for the marker line
+  segments?: TranslationSegment[]; // old split format; joined into one line
+  confidence: "high" | "medium" | "low";
+}
 
 function stripLineSegArrays(xml: string): string {
   return xml.replace(/<hp:linesegarray>[\s\S]*?<\/hp:linesegarray>/g, "");
@@ -29,15 +45,15 @@ export function translationText(t: Translation): string {
 export function replaceMarkers(
   xml: string,
   translations: Translation[],
-  boldIds: Set<string>,
+  selectedIds: Set<string>,
 ): string {
   const translationMap = new Map<number, Translation>();
   for (const t of translations) {
     translationMap.set(t.markerIndex, t);
   }
 
-  // Match bold <hp:run> containing @@ markers (with optional language code) in document order
-  const idPattern = [...boldIds].join("|");
+  // Match each <hp:run> in a requested style that contains an @@ marker (with optional language code) in document order
+  const idPattern = [...selectedIds].join("|");
   const regex = new RegExp(
     `(<hp:run\\s+charPrIDRef="(?:${idPattern})"><hp:t>(?:[^<]|<hp:tab[^/]*\\/>)*)` +
     `(@@(?:\\([^)]+\\))?)(?:[^<]|<hp:tab[^/]*\\/>)*(</hp:t>)`,

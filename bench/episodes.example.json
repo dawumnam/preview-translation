@@ -1,0 +1,14 @@
+[
+  {
+    "id": "1104",
+    "script": "/path/to/1104_work/1104.hwpx",
+    "media": "/path/to/1104.mp4",
+    "delivered": "/path/to/1104_work/translations.json"
+  },
+  {
+    "id": "1103",
+    "script": "/path/to/1103_work/1103.hwpx",
+    "media": "/path/to/1103.mp4",
+    "delivered": "/path/to/1103_work/translations.json"
+  }
+]

@@ -2,10 +2,10 @@
   "name": "preview-translation",
   "type": "module",
   "scripts": {
-    "start": "bun run src/index.ts"
+    "translate": "bun src/run.ts",
+    "test": "bun test"
   },
   "dependencies": {
-    "@google/genai": "^1.0.0",
     "adm-zip": "^0.5.16"
   },
   "devDependencies": {
