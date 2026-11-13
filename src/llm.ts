@@ -24,6 +24,10 @@ export interface CallOptions {
   hedgeAfterMs?: number | number[];
   /** Shown in error messages. */
   label?: string;
+  /** Extra generationConfig fields, e.g. { mediaResolution: "MEDIA_RESOLUTION_LOW" } for video. */
+  config?: Record<string, unknown>;
+  /** Output token limit for this call (default 32768). */
+  maxOutputTokens?: number;
 }
 
 export interface CallResult<T> {
@@ -40,11 +44,14 @@ interface Usage {
   input: number;
   output: number;
   thoughts: number;
+  /** Input tokens for each modality (TEXT, AUDIO, VIDEO, IMAGE). */
+  inputBy: Record<string, number>;
 }
 const usageByModel = new Map<string, Usage>();
 function addUsage(model: string, u: any) {
-  const cur = usageByModel.get(model) ?? { calls: 0, input: 0, output: 0, thoughts: 0 };
+  const cur = usageByModel.get(model) ?? { calls: 0, input: 0, output: 0, thoughts: 0, inputBy: {} };
   cur.calls++;
+  for (const d of u?.promptTokensDetails ?? []) cur.inputBy[d.modality] = (cur.inputBy[d.modality] ?? 0) + (d.tokenCount ?? 0);
   cur.input += u?.promptTokenCount ?? 0;
   cur.output += u?.candidatesTokenCount ?? 0;
   cur.thoughts += u?.thoughtsTokenCount ?? 0;
@@ -106,11 +113,12 @@ async function once<T>(o: CallOptions, signal: AbortSignal): Promise<Once<T>> {
     contents: [{ role: "user", parts: o.parts }],
     generationConfig: {
       // Gemini 4 Argon refuses more than 32768 on a non-streaming call.
-      maxOutputTokens: 32768,
+      maxOutputTokens: o.maxOutputTokens ?? 32768,
       responseMimeType: "application/json",
       responseSchema: o.schema,
       ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
       ...(o.thinkingLevel ? { thinkingConfig: { thinkingLevel: o.thinkingLevel } } : {}),
+      ...(o.config ?? {}),
     },
   };
   let res: Response;

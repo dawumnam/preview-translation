@@ -42,7 +42,7 @@ function paragraphText(para: string): string {
 }
 
 /** Indices of a longest non-decreasing subsequence of xs. */
-function longestNonDecreasing(xs: number[]): Set<number> {
+export function longestNonDecreasing(xs: number[]): Set<number> {
   const tails: number[] = []; // tails[k] = index of the smallest tail of a run of length k+1
   const prev: number[] = new Array(xs.length).fill(-1);
   for (let i = 0; i < xs.length; i++) {
