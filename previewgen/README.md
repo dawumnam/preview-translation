@@ -2,7 +2,7 @@
 
 Writes the preview document (프리뷰 노트) of a day of raw footage from the video alone. This is the document that a human 프리뷰어 writes before the scriptwriter marks the `@@` lines for translation: scene headers, a TC and a description for each shot, the Korean speech word for word with speaker labels, `@@(조)` for each foreign-language turn, and `디렉` for directions.
 
-Status: an experiment on branch `preview-gen-experiment`. It was tuned on Georgia 1023 and on stretches of 1104 and 1105, and tested on 1022. The sections below are in the order of the work: the first round (prompts 1 to 3, one pass), then the second round (shot rules, a picture-only pass, two-level scenes, the camera-file layout), which is what `run.ts` does now. The translator in `src/` is not changed, except for two small additions to `src/llm.ts` (extra `generationConfig` fields, token count for each media type) and one export in `src/script.ts`.
+Status: an experiment on branch `preview-gen-experiment`. It was tuned on Georgia 1023 and on stretches of 1104 and 1105, and tested on 1022. The sections below are in the order of the work: the first round (prompts 1 to 3, one pass), the second round (shot rules, a picture-only pass, two-level scenes, the camera-file layout), and the third round (where the writers put a TC line; the TC clock). `run.ts` does what the third round says. The translator in `src/` is not changed, except for two small additions to `src/llm.ts` (extra `generationConfig` fields, token count for each media type) and one export in `src/script.ts`.
 
 ## Run
 
@@ -14,7 +14,8 @@ bun previewgen/run.ts <video>.mp4 --template <earlier>.hwpx --out <dir> --refere
 Run it from the project root (bun reads `GEMINI_API_KEY` from `.env`). It needs `ffmpeg`, and for a `.hwp` template the Homebrew OpenJDK (as the translator does).
 
 - `<dir>/<id>_preview.hwpx` and `.txt`: the document as a flat list, like the human previews. `<id>` is the first four digits in the name of the video.
-- `<dir>/<id>_preview_by_camera_file.hwpx` and `.txt`: the same content with one head line for each camera file (see below).
+- `--notes fewer`: fewer shot lines inside a take (see the third round below).
+- `--by-camera-file`: also writes `<id>_preview_by_camera_file.hwpx` and `.txt`, with one head line for each camera file (see below). It is not the target layout.
 - `<dir>/<id>_preview_work/`: cut list, decoded sound, clips, `windows.json` (every turn that the model heard, with its tag and its exact time) and `preview.json` (the lines of the document with exact times).
 - `--template`: an earlier preview of the same programme. Page setup, fonts and styles come from it. Without it only the text file is written.
 - A second run uses the windows that are already in the work directory. `--fresh` sends all windows again.
@@ -145,6 +146,41 @@ What this check does not cover: the words of a line, the notes inside a recordin
 
 Example (1022, 16:05 to 21:20): the code finds 9 recordings. The human preview has a shot line for 6 of them and no line for 3 (two false starts of 14 s and 13 s at 16:22 and 16:36, and 19 s of crew talk at 18:18). In the flat list a reader cannot see that they are there.
 
+## Third round: where the writers put a line with a TC (13 November 2026)
+
+The camera-file layout is not the target: the lines with a TC must stand where a human writer puts them, and a jump of the picture is not that rule. This round asked what decides the place. Data: the nine human previews (24.4 h of video, 4,225 gaps between two TC lines). No model call, if not said.
+
+| Fact | Number |
+|---|---|
+| Lines that have a TC | shot lines 99%, Korean speech 44% (host 54%, interpreter 34%, director 26%), foreign-language lines 25%, `디렉` 11% |
+| Seconds between two TC lines | under 5 s: 2%; 5 to 10 s: 13%; 10 to 25 s: 56%; 25 to 40 s: 20%; above 40 s: 8%. Median 17 s. |
+| A speech line has a TC, by the seconds since the last TC (1022 and 1023, 507 lines; the time of a line with no TC comes from the model output) | under 6 s: 2%; 6 to 9 s: 34%; 9 to 25 s: 51%; 25 to 40 s: 78%; above 40 s: 89% |
+| Shot lines that stand at a cut | 47% with the fixed limit, 53% with a detector that adapts to dark footage (it finds cuts that the fixed limit misses, but 22% of its cuts have no human shot line after them, against 11%) |
+| The other shot lines, by what they describe | what people do: 55%; a thing or a place: 22%; a framing code only (sk, cs ...): 16%; a camera move (pan, tu, td, tr): 7% |
+| Do they follow the sound? | No. Of the starts of speech after 5 s of silence, 50% have a human TC line near them. Shot lines stand in quiet moments as often as chance (50% against 54% of the time). They are 2.2 times as dense when nobody talks (2.5 for each minute against 1.1). |
+| Do they follow a change of the picture other than a cut? | No better than chance (second round). |
+
+So the writer keeps a clock. A new TC line comes when something new starts (a shot, an action, a turn after a pause) and the last TC is some seconds back: hardly ever within 5 s, about half of the time between 9 and 25 s, nearly always after 40 s. Which of the possible moments gets the line is the writer's choice. The share of speech lines with a TC is 25 to 48% from one preview to the next.
+
+What was tried to copy the placement (1022 and 1023; the two numbers are for these two episodes):
+
+| Method | Shot lines, against the human count | Human shot lines found (-10/+5 s) | Output shot lines at a human line |
+|---|---|---|---|
+| All notes of the model (the default) | 1.6 and 2.2 times | 87%, 92% | 55%, 42% |
+| Clock on the notes: no note within 10 s of the last TC (`--notes fewer`) | 1.2 and 1.5 times | 81%, 83% | 65%, 54% |
+| Editor (`editor.ts`): a text model edits the log into the writer's form; it gets pairs (machine log, human preview) from the other episode | 1.0 and 1.3 times | 76%, 81% | 74%, 64% |
+| Example clips with the human lines in the request (`--examples`, picture-only pass, 10 minutes of 1104) | 1.2 times | 77% (81% with no examples) | 65% (60%) |
+
+- The lines at a cut are found at 92 to 100% in all rows. The numbers differ in the notes inside a take.
+- At the count of lines of the human, about 3 in 4 lines stand at the same places, with each method. More lines find more of the human lines.
+- By content, judged by a text model (same subject and same action within 20 s before to 15 s after the human TC): with all notes, 79% and 78% of the human shot lines have the same picture in the output, and 97% and 95% the same subject. With `--notes fewer`: 70% and 68%.
+- TC lines of all kinds with the default: the output has a TC within 5 s of 84% and 86% of the human TCs (within 10 s: 95% and 98%), with 1.4 and 1.6 times as many TCs.
+- 1023 with the current code (prompt with no example from 1023, picture-only pass, Gemini for names and scenes): Korean lines 95%, foreign-language turns 91%, shot lines 92% (100% at a cut, 83% inside a take), all 6 scene starts within 30 s (13 parts).
+
+What `run.ts` does now: all shot notes stay; `placeTc()` decides with the clock which speech lines show their TC (Korean 46 to 54%, foreign 26 to 27% of the lines); the camera-file layout is written only with `--by-camera-file`.
+
+Open: a bar for the notes inside a take. Agreement of 95% with one writer's free choices is not in reach of the methods above. The right reference is how far two human writers agree on the same footage; no footage with two previews was at hand.
+
 ## Relation to the translator
 
 `preview.json` has the exact start time of each `@@` line. The translator (`src/`) finds the speech of a marker between the TCs that a human typed; with a generated preview it can take the time of the line itself.
@@ -162,6 +198,7 @@ Example (1022, 16:05 to 21:20): the code finds 9 recordings. The human preview h
 | `cast.ts` | One label for one person |
 | `scenes.ts` | Scene headers |
 | `write.ts` | Text and HWPX output |
+| `editor.ts` | The editor step (tested, not in `run.ts`): a text model edits the machine log with pairs from another episode |
 | `cliplayout.ts` | CLI: the layout with the camera file as the unit |
 | `checklayout.ts` | CLI: check the frame of that layout against the cut list (no model call) |
 | `gt.ts` | Reads a human preview (`.hwpx`) as lines |

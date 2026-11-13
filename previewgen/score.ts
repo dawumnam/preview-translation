@@ -207,6 +207,8 @@ export interface Score {
   /** Human shot lines apart: those that stand at a camera cut, and those inside a take. */
   shotAt: { cutRef: number; cutFound: number; insideRef: number; insideFound: number };
   time: { lines: number; medianAbs: number; within3: number; within5: number };
+  /** For each human speech line that has a match in the output: [line number, time of the generated line]. */
+  lineTimes?: [number, number][];
   /** Human lines with a TC (any kind) that have a generated line with a shown TC within 5 s / 10 s. */
   tc: { ref: number; within5: number; within10: number; gen: number; genNearRef5: number };
 }
@@ -271,13 +273,13 @@ export function score(gen: PreviewLine[], gtAll: GtLine[], ranges: [number, numb
   });
 
   // --- Foreign turns and directions, gap by gap between Korean anchors ---
-  type Turn = { cls: "F" | "D"; speaker: string; scene: string; tc?: number };
+  type Turn = { cls: "F" | "D"; speaker: string; scene: string; tc?: number; no?: number };
   const refSeq: (Turn | { anchor: number })[] = [];
   {
     let k = 0;
     for (const l of gt) {
-      if (l.kind === "foreign") refSeq.push({ cls: "F", speaker: normSpeaker(l.speaker), scene: l.scene, tc: l.tc });
-      else if (isDirection(l)) refSeq.push({ cls: "D", speaker: normSpeaker(l.speaker), scene: l.scene, tc: l.tc });
+      if (l.kind === "foreign") refSeq.push({ cls: "F", speaker: normSpeaker(l.speaker), scene: l.scene, tc: l.tc, no: l.no });
+      else if (isDirection(l)) refSeq.push({ cls: "D", speaker: normSpeaker(l.speaker), scene: l.scene, tc: l.tc, no: l.no });
       else if (l.kind === "speech" && normText(l.text).length > 0) {
         if (partner[k] >= 0) refSeq.push({ anchor: partner[k] });
         k++;
@@ -416,8 +418,12 @@ export function score(gen: PreviewLine[], gtAll: GtLine[], ranges: [number, numb
     for (const [k, c] of co) console.log(`  ${k} → ${[...c].sort((x, y) => y[1] - x[1]).map(([n, v]) => `${n}:${v}`).join(" ")}`);
   }
 
+  const lineTimes: [number, number][] = [];
+  refSpeech.forEach((r, i) => partner[i] >= 0 && lineTimes.push([r.no, genSpeech[partner[i]].tc!]));
+  for (const [r, x] of pairs) if (r.no !== undefined && x.tc !== undefined) lineTimes.push([r.no, x.tc]);
   return {
     range: ranges,
+    lineTimes,
     korean: {
       refChars: a.length, genChars: b.length, matched,
       recall: matched / Math.max(1, a.length), precision: matched / Math.max(1, b.length),

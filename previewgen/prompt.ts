@@ -70,6 +70,8 @@ export interface PromptOptions {
   about?: string;
   /** The clip has no sound: only shot entries are asked for. */
   shotsOnly?: boolean;
+  /** Count of examples (a clip and the lines of a human writer for it) that stand before this clip in the request. */
+  examples?: number;
 }
 
 const mmss = (sec: number) => {
@@ -131,7 +133,7 @@ export function buildLogPrompt(o: PromptOptions): string {
   const cuts = (o.cuts ?? []).filter((c) => c > 1 && c < dur - 1);
   const speech = !o.shotsOnly;
   return `You are a 프리뷰어 (footage logger) for a Korean TV travel documentary. The clip is ${dur} seconds of raw footage ${speech ? "with sound" : "with no sound"}. Write the 프리뷰 노트 (preview log) for it: ${speech ? "one entry for each shot and one entry for each spoken turn" : "one entry for each shot (the spoken turns are logged in another step)"}, in time order. Editors use the log to find footage without watching it. It must be complete, and the times must be right.
-${o.about ? `\n## About this shoot\n${o.about}\n` : ""}
+${o.examples ? `\nBefore this clip you got ${o.examples} examples: clips of other days of the same programme, each with the ${speech ? "log" : "shot entries"} that a 프리뷰어 wrote for it. Study at which moments the 프리뷰어 writes an entry and at which moments not, and how many entries there are for each minute of footage of each kind (scenery shots, an activity, people who stand and talk). Log this clip in the same way: the same kind of moments, and about the same count of entries for each minute.\n` : ""}${o.about ? `\n## About this shoot\n${o.about}\n` : ""}
 ## The footage
 Raw camera files joined end to end, not edited: several takes of the same action one after the other, scenery shots, interviews, and talk between takes.
 ${o.startsAtCut === false ? "This clip starts in the middle of a take.\n" : ""}${

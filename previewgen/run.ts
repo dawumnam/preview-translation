@@ -2,19 +2,26 @@
 //
 //   bun previewgen/run.ts <video> --template <earlier preview .hwp|.hwpx> [--id 1023] [--out <dir>]
 //       [--about "<place and subject of the shoot>"] [--reference <human preview .hwpx>] [--fresh]
-//       [--no-shot-pass] [--shot-model gemini-3.8-flash]
+//       [--no-shot-pass] [--shot-model gemini-3.8-flash] [--notes fewer] [--by-camera-file]
 //
-// Writes the document in two layouts: <out>/<id>_preview (.hwpx, .txt) is the
-// flat list of the human previews, <out>/<id>_preview_by_camera_file has one
-// head line for each camera file (see cliplayout.ts). All other files go to
-// <out>/<id>_preview_work/. Without --template only the text files are
-// written. With --reference the result is scored against a human preview.
+// Writes <out>/<id>_preview (.hwpx, .txt): the flat list of the human
+// previews. All other files go to <out>/<id>_preview_work/. Without
+// --template only the text file is written. With --reference the result is
+// scored against a human preview.
+//
+// Which speech lines show a TC follows the clock of the human writers
+// (placeTc in assemble.ts). All shot notes of the model stay.
+// --notes fewer      leaves out a note inside a take that comes less than 10 s
+//                    after the last TC: a count of shot lines nearer to that of
+//                    a human preview, but less of its content.
+// --by-camera-file   also writes <id>_preview_by_camera_file: one head line
+//                    for each camera file (see cliplayout.ts).
 import { execFileSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { mediaDuration } from "../src/audio";
 import { usageReport } from "../src/llm";
-import { applyStyle, HOUSE_STYLE, joinShots, mergeWindows } from "./assemble";
+import { applyStyle, FEWER_NOTES_GAP, HOUSE_STYLE, joinShots, mergeWindows, placeTc, RHYTHM } from "./assemble";
 import { clipRows } from "./cliplayout";
 import { applyCast, buildCastPrompt, castFromAnswer, castNotes, unifyCast, type CastAnswer } from "./cast";
 import { DEFAULT_SETTINGS, watch, type GenFile, type GenSettings, type WindowOut } from "./gen";
@@ -106,7 +113,7 @@ async function main() {
   const notes = castNotes(both);
   const cast = !manual ? await unifyCast(both, textModel) : notes.length ? castFromAnswer(notes, answer<CastAnswer>("cast", buildCastPrompt(notes))) : { rename: new Map(), persons: [] };
   const merged = joinShots(mergeWindows(applyCast(windows, cast), cuts), mergeWindows(applyCast(shotWindows, cast), cuts), cuts);
-  const styled = applyStyle(merged, HOUSE_STYLE);
+  const styled = placeTc(applyStyle(merged, HOUSE_STYLE), { ...RHYTHM, noteGap: arg("notes") === "fewer" ? FEWER_NOTES_GAP : RHYTHM.noteGap });
   const lines = manual ? applyScenes(styled, answer<SceneAnswer>("scenes", buildScenePrompt(styled))) : await addScenes(styled, textModel);
   const tText = performance.now();
 
@@ -115,8 +122,8 @@ async function main() {
   const base = path.join(outDir, `${id}_preview`);
   writeTxt(rows, `${base}.txt`);
   fs.writeFileSync(path.join(workDir, "preview.json"), JSON.stringify({ media, duration: dur, persons: cast.persons, lines }, null, 1));
-  const byFile = clipRows(id, lines, cuts, dur, cast.persons);
-  writeTxt(byFile, `${base}_by_camera_file.txt`);
+  const byFile = process.argv.includes("--by-camera-file") ? clipRows(id, lines, cuts, dur, cast.persons) : undefined;
+  if (byFile) writeTxt(byFile, `${base}_by_camera_file.txt`);
   let template = arg("template");
   if (template) {
     if (template.endsWith(".hwp")) {
@@ -125,6 +132,7 @@ async function main() {
       template = converted;
     }
     for (const [r, file] of [[rows, `${base}.hwpx`], [byFile, `${base}_by_camera_file.hwpx`]] as const) {
+      if (!r) continue;
       writeHwpx(r, template, file);
       execFileSync("unzip", ["-tq", file], { stdio: ["ignore", "ignore", "inherit"] });
     }
@@ -138,8 +146,8 @@ async function main() {
   if (cast.persons.length) console.log(`locals: ${cast.persons.map((p) => `${p.label} (${p.look}, ${p.turns} turns)`).join("; ")}`);
   if (failed.length) console.log(`NOTE: ${failed.length} windows got no answer and are empty in the document: ${failed.map((w) => `${Math.round(w.start)}-${Math.round(w.end)} s`).join(", ")}. Run the command again.`);
   if (shotFailed.length) console.log(`NOTE: the picture-only pass got no answer for ${shotFailed.length} windows (${shotFailed.map((w) => `${Math.round(w.start)}-${Math.round(w.end)} s`).join(", ")}); those stretches have the shot lines of the usual pass only. Run the command again.`);
-  console.log(`camera files: ${byFile.filter((r) => r.style === "clip").length}`);
-  console.log(`written: ${base}.txt, ${base}_by_camera_file.txt${template ? ", and both as .hwpx" : ""}`);
+  console.log(`lines with a TC: ${rows.filter((r) => r.style === "body" && /^\d{4,6}\t/.test(r.text)).length}`);
+  console.log(`written: ${base}.txt${template ? ` and .hwpx` : ""}${byFile ? `, ${base}_by_camera_file.txt${template ? " and .hwpx" : ""}` : ""}`);
 
   const reference = arg("reference");
   if (reference) {

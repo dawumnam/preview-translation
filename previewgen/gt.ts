@@ -19,6 +19,8 @@ export interface PreviewLine {
   lang?: string;
   /** Generated lines only: part of the programme, a request of the crew, or talk off the record. */
   use?: "take" | "ask" | "direct";
+  /** Generated lines only, after placeTc(): the document shows the TC of this line. */
+  showTc?: boolean;
   /** Generated scene lines only: 1 = a new place, 2 = a new activity at the same place. */
   level?: 1 | 2;
 }

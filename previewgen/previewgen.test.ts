@@ -4,7 +4,7 @@ import AdmZip from "adm-zip";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { applyStyle, HOUSE_STYLE, joinShots, mergeWindows, tcShown } from "./assemble";
+import { applyStyle, HOUSE_STYLE, joinShots, mergeWindows, placeTc, tcShown } from "./assemble";
 import { clipRows } from "./cliplayout";
 import { applyCast, castFromAnswer, castNotes } from "./cast";
 import { planWindows } from "./cuts";
@@ -230,6 +230,44 @@ test("shot lines of the picture-only pass are added where the usual pass has non
     [200, "집 sk"],
   ]);
   expect(out.length).toBe(base.length + 2);
+});
+
+test("TC clock: no TC soon after the last one; a note inside a take needs a gap; a shot line at a cut always stays", () => {
+  const cutShot = (tc: number, text: string): PreviewLine => ({ tc, tcDoc: tc + 2, kind: "shot", text });
+  const lines = [
+    cutShot(100, "걸어오는 큐 정면"), // shows 102
+    say(105, "큐", "와 예쁘다"), // 3 s after the last TC: no TC
+    shot(108, "웃는 큐"), // a note 6 s after the last TC: left out
+    say(111, "큐", "여기가 지하인 거죠"), // host, 9 s: TC
+    foreign(115, "코"), // 4 s: no TC
+    foreign(120, "두여"), // foreign, 9 s: no TC
+    say(124, "코", "네 맞습니다"), // other speaker, 13 s: no TC
+    shot(125, "문 여는 두여"), // a note 14 s after the last TC: stays
+    cutShot(128, "집 sk"), // at a cut: stays, 3 s after the note
+    say(131, "피", "한 번 더", "direct"), // no TC on a direction
+    foreign(160, "두여"), // 30 s: TC
+    say(163, "코", "30년 됐대요"), // 3 s: no TC
+    say(175, "코", "지금은 창고로 씁니다"), // 15 s, and 12 s after the line before: TC by the pause
+  ];
+  const out = placeTc(lines, { minGap: 6, noteGap: 10, hostGap: 8, foreignGap: 15, otherGap: 20, pause: 10 });
+  expect(out.map((l) => `${l.showTc ? "T" : "-"} ${l.tc} ${l.kind === "shot" ? l.text : l.speaker}`)).toEqual([
+    "T 100 걸어오는 큐 정면",
+    "- 105 큐",
+    "T 111 큐",
+    "- 115 코",
+    "- 120 두여",
+    "- 124 코",
+    "T 125 문 여는 두여",
+    "T 128 집 sk",
+    "- 131 피",
+    "T 160 두여",
+    "- 163 코",
+    "T 175 코",
+  ]);
+  // The document shows the TCs that placeTc chose.
+  expect(tcShown(out)).toEqual(out.map((l) => l.showTc === true));
+  // Lines with no flag: the simple rule (a TC on speech 8 s after the last one).
+  expect(tcShown(lines)[1]).toBe(false);
 });
 
 test("camera-file layout: one head line for each file, notes and turns below it", () => {

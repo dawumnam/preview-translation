@@ -148,8 +148,85 @@ export function applyStyle(lines: PreviewLine[], o: StyleOptions = HOUSE_STYLE):
   return merged;
 }
 
+export interface RhythmOptions {
+  /** No new TC within this many seconds of the last one. A shot line at a cut is the one exception. */
+  minGap: number;
+  /** A note inside a take (a shot line that is not at a cut) stays when the last TC is at least this many seconds back. */
+  noteGap: number;
+  /** A Korean turn of the host shows its TC when the last TC is at least this many seconds back. */
+  hostGap: number;
+  /** The same for a foreign-language turn. */
+  foreignGap: number;
+  /** The same for a Korean turn of another speaker. */
+  otherGap: number;
+  /** A turn that starts this many seconds after the line before it shows its TC, when `minGap` allows. */
+  pause: number;
+}
+
+/**
+ * Where the human writers put a line with a TC (nine Georgia previews, 4,225
+ * gaps between two TC lines): hardly ever within 5 s of the last TC (2%),
+ * most often 10 to 25 s after it, and seldom later than 40 s (10%). A shot
+ * line has a TC in 99% of cases, a Korean speech line in 44%, a foreign-
+ * language line in 25%, a 디렉 line in 11%. For a speech line the time since
+ * the last TC decides: 0 to 4% within 6 s, about half between 9 and 25 s,
+ * 79% and more after 25 s; the host's lines get one sooner than other lines.
+ * So the writer keeps a clock: a new TC line when something new starts and
+ * the last TC is some seconds back.
+ *
+ * The values were set on episode 1023 and checked on 1022. With them the
+ * share of speech lines with a TC is near that of the human previews: Korean
+ * 54% and 46% (human 59% and 55%), foreign 26% and 27% (human 43% and 27%).
+ * All notes inside a take stay (`noteGap` 0): to leave notes out loses
+ * content that the human previews have.
+ */
+export const RHYTHM: RhythmOptions = { minGap: 6, noteGap: 0, hostGap: 8, foreignGap: 15, otherGap: 20, pause: 10 };
+
+/**
+ * `noteGap` for a document with fewer shot lines. With 10 s the count of shot
+ * lines is 1.2 to 1.5 times that of the human preview (1.6 to 2.2 times with
+ * all notes), but fewer of the human shot lines are found: 81 to 83% in place
+ * of 87 to 92%, and the same picture for 68 to 70% in place of 78 to 79%.
+ */
+export const FEWER_NOTES_GAP = 10;
+
+/**
+ * Sets which lines show a TC, and leaves out the notes inside a take that
+ * come too soon after the last TC line. `lines` are in time order.
+ */
+export function placeTc(lines: PreviewLine[], o: RhythmOptions = RHYTHM): PreviewLine[] {
+  const out: PreviewLine[] = [];
+  let lastTc = -Infinity; // the last TC that the document shows
+  let lastStart = -Infinity; // start of the line before
+  for (const l of lines) {
+    if (l.tc === undefined || l.kind === "scene" || l.kind === "note") {
+      out.push({ ...l });
+      continue;
+    }
+    if (l.kind === "shot") {
+      const shown = l.tcDoc ?? l.tc;
+      // A shot line at a cut (it has `tcDoc`) is a new picture: it always stays.
+      if (l.tcDoc === undefined && l.tc - lastTc < o.noteGap) continue;
+      out.push({ ...l, showTc: true });
+      lastTc = shown;
+      lastStart = l.tc;
+      continue;
+    }
+    const gap = l.tc - lastTc;
+    const direction = l.kind === "speech" && l.use === "direct";
+    const need = l.kind === "foreign" ? o.foreignGap : l.speaker === "큐" ? o.hostGap : o.otherGap;
+    const show = !direction && gap >= o.minGap && (gap >= need || l.tc - lastStart >= o.pause);
+    out.push({ ...l, showTc: show });
+    if (show) lastTc = l.tc;
+    lastStart = l.tc;
+  }
+  return out;
+}
+
 /** True for each line that shows its TC in the document. */
 export function tcShown(lines: PreviewLine[], o: StyleOptions = HOUSE_STYLE): boolean[] {
+  // After placeTc() each line says for itself if it shows its TC.
+  if (lines.some((l) => l.showTc !== undefined)) return lines.map((l) => l.showTc === true && l.tc !== undefined);
   let last = -Infinity;
   return lines.map((l) => {
     if (l.tc === undefined || l.kind === "scene" || l.kind === "note") return false;

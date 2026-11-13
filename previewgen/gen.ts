@@ -14,7 +14,7 @@ import { decodeAudio, mediaDuration } from "../src/audio";
 import { callJson, usageReport } from "../src/llm";
 import { clipPart, makeClip } from "./clip";
 import { detectCuts, loudness, planWindows, type PlannedWindow } from "./cuts";
-import type { PreviewLine } from "./gt";
+import { loadGt, type PreviewLine } from "./gt";
 import { buildLogPrompt, LOG_SCHEMA, type RawWindow } from "./prompt";
 
 export interface Person {
@@ -47,6 +47,65 @@ export interface GenSettings {
   tag: string;
   /** "shots": the model gets the picture with no sound and writes shot entries only. */
   only?: "shots";
+  /** A JSON file with examples (see ExampleSpec): clips of other episodes with the lines of the human writer. */
+  examples?: string;
+}
+
+/** An example for the model: a stretch of another episode and the preview that a human wrote for that episode. */
+export interface ExampleSpec {
+  media: string;
+  /** The human preview of that episode (.hwpx). */
+  reference: string;
+  start: number;
+  end: number;
+}
+
+const mmss = (sec: number) => {
+  const s = Math.max(0, Math.round(sec));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
+
+const exampleCache = new Map<string, Promise<{ parts: any[]; count: number }>>();
+
+/** The request parts that show the examples: for each, the clip and then the lines of the human writer. */
+export function exampleParts(file: string, workDir: string, s: GenSettings): Promise<{ parts: any[]; count: number }> {
+  const key = `${file}|${s.only ?? ""}|${s.fps}`;
+  if (!exampleCache.has(key)) {
+    exampleCache.set(
+      key,
+      (async () => {
+        const specs = JSON.parse(fs.readFileSync(file, "utf-8")) as ExampleSpec[];
+        const parts: any[] = [];
+        for (const [i, x] of specs.entries()) {
+          const base = path.basename(x.media).replace(/\.[^.]+$/, "");
+          const dir = path.join(workDir, "examples", base);
+          // The model looks at one frame for each second, so a small file is enough; the request has a size limit.
+          const clip = await makeClip(x.media, x.start, x.end, dir, { fps: 1, mode: s.only === "shots" ? "video" : "av", height: 180 });
+          const cuts = (await detectCuts(x.media, path.join(workDir, "examples", `${base}_cuts.json`))).filter((c) => c > x.start + 1 && c < x.end - 1);
+          const human = loadGt(x.reference).filter((l) => l.tcPrev >= x.start && l.tcPrev < x.end && (l.tc === undefined || l.tc < x.end));
+          const rows: string[] = [];
+          for (const l of human) {
+            if (l.kind === "shot" && l.tc !== undefined) rows.push(`[${mmss(l.tc - x.start)}] shot: ${l.text}`);
+            else if (s.only !== "shots" && (l.kind === "speech" || l.kind === "foreign")) {
+              const time = l.tc !== undefined ? mmss(l.tc - x.start) : "  :  ";
+              rows.push(`[${time}] ${l.speaker} (${l.kind === "foreign" ? "foreign" : "ko"}): ${l.text}`);
+            }
+          }
+          const dur = Math.round(x.end - x.start);
+          parts.push({ text: `Example ${i + 1}: a clip of ${dur} seconds.` });
+          parts.push(clipPart(clip, s.fps));
+          parts.push({
+            text:
+              `Example ${i + 1}. ${cuts.length ? `The picture jumps to a new camera file at: ${cuts.map((c) => mmss(c - x.start)).join(", ")}.` : "Software found no jump to a new camera file in it."}\n` +
+              `The ${s.only === "shots" ? "shot entries" : "log"} of the 프리뷰어 for this clip (${rows.length} ${rows.length === 1 ? "entry" : "entries"}):\n` +
+              (rows.length ? rows.join("\n") : "(no shot entry: the people stay in one place and talk)"),
+          });
+        }
+        return { parts, count: specs.length };
+      })(),
+    );
+  }
+  return exampleCache.get(key)!;
 }
 
 export const DEFAULT_SETTINGS: GenSettings = { model: "gemini-4-argon", thinking: "LOW", fps: 1, res: "LOW", window: 300, about: "", cast: "", tag: "" };
@@ -125,6 +184,7 @@ export async function watch(media: string, workDir: string, s: GenSettings, from
   const { dur, cuts, loud, step } = await prepare(media, workDir);
   const plan = planWindows(dur, cuts, loud, step, s.window, from, Math.min(dur, to));
   const done = new Map(have.filter((w) => !w.error).map((w) => [`${w.start}-${w.end}`, w]));
+  const ex = s.examples ? await exampleParts(s.examples, workDir, s) : undefined;
 
   const windows = await Promise.all(
     plan.map(async (p): Promise<WindowOut> => {
@@ -138,10 +198,11 @@ export async function watch(media: string, workDir: string, s: GenSettings, from
         about: s.about || undefined,
         cast: s.cast || undefined,
         shotsOnly: s.only === "shots",
+        examples: ex?.count,
       });
       const r = await callJson<RawWindow>({
         model: s.model,
-        parts: [clipPart(clip, s.fps), { text: prompt }],
+        parts: [...(ex ? [...ex.parts, { text: "The clip to log:" }] : []), clipPart(clip, s.fps), { text: prompt }],
         schema: LOG_SCHEMA,
         thinkingLevel: s.thinking,
         config: { mediaResolution: `MEDIA_RESOLUTION_${s.res}` },
@@ -186,6 +247,7 @@ async function main() {
     cast: arg("cast", "")!,
     tag: arg("tag", "")!,
     ...(arg("only") === "shots" ? { only: "shots" as const } : {}),
+    ...(arg("examples") ? { examples: arg("examples")! } : {}),
   };
   let have: WindowOut[] = [];
   if (fs.existsSync(outPath)) {
