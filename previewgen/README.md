@@ -251,6 +251,26 @@ The scene step has one level now, as the human previews, with rules for the kind
 
 On machine logs (1022, 1103, and the 1023 log of the third round) the one-level step finds 16 of 23 starts with 39 scenes; two runs of it on the same log differ (see the table above). Some scene starts that are not found are 2 to 4 minutes from the writer's: the same part of the day, cut at another event.
 
+### How much of the nine previews was used
+
+| Use | Previews |
+|---|---|
+| Statistics on the text of the preview and on the cut list (TC gaps, cuts, where shot lines stand, scenes); no model call | All nine (24.4 h of video) |
+| Scene step on the text of the preview | All nine |
+| Full episode through the model, output compared with the preview | 1022, 1023, 1103 (5.7 h) |
+| Stretches of 10 to 15 minutes through the model, compared | 1023, 1024, 1025, 1028, 1029, 1104, 1105 (85 min; 60 min of them are not in the line above) |
+| Never compared with an output | 17.7 h (73%) |
+
+The model sees no preview when it runs: the previews gave the rules in the prompt and in the code. Steps that learn from examples were tested with few examples. Do more examples help?
+
+| Test | Result (balance of the shot lines) |
+|---|---|
+| Line selector fitted and tested on the same episode (`study/selector.ts`) | 73% and 70%, against 71% and 67% when it is fitted on the other episode. The limit is what the features know, not the count of examples. |
+| Editor step with example pairs from seven episodes (85 min) in place of one (25 min), on the lines of both passes (`study/editor_many.ts`) | 1103: 75% against 71% (0.90 and 0.81 times the writer's count). 1022: 70% against 72% (1.21 and 1.18 times). No clear gain. |
+| Example clips with the writer's lines in the watch request (third round) | No gain. |
+
+Not done: the other 17.7 h through the model (about 21 USD), which would give a test on all nine episodes; and a model that is trained on all pairs of video and preview (not tested).
+
 ### What `run.ts` does now
 
 One pass (`gemini-4-argon`, picture and sound) with the new shot rules; the TC clock of the third round; scenes on one level. Cost: about 1.2 USD for each hour of video (2.12 and 2.71 USD for the two episodes above), at the November 2026 price.

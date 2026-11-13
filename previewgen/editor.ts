@@ -87,6 +87,7 @@ What is known about the 프리뷰어's habits (measured on nine episodes):
 - Two timecodes are hardly ever less than 5 seconds apart. Most are 10 to 25 seconds apart, few more than 40.
 - A speech line gets a timecode when some time has passed since the last timecode: nearly never within 6 seconds, about half of the lines between 9 and 25 seconds, nearly all after 25 seconds. The host's lines get one sooner than other lines.
 - About half of the shot lines stand where a new camera file starts. The other half are notes inside a running recording: what the people do now, a new subject, a new framing. There are about two times as many of them for each minute when nobody speaks as during talk. During an interview or a conversation in one place the 프리뷰어 writes the speech and nearly no shot lines.
+- In an activity (people work, cook, eat or gather fruit, also while they talk) there is a shot line about every 10 to 20 seconds: who does what now. It has the timecode, and the speech lines after it have none.
 - Takes: each new take of the same action gets its shot line again, also with the same words.
 
 The examples show a machine log and the 프리뷰어's version of the same footage. Study which machine lines the 프리뷰어 has, which not, and which lines carry a timecode.

@@ -44,7 +44,7 @@ function fit(xs: number[][], ys: number[], l2 = 0.05, steps = 4000, rate = 0.05)
 const prob = (w: number[], c: Candidate) => 1 / (1 + Math.exp(-features(c).reduce((a, v, i) => a + v * w[i], 0)));
 const pc = (x: number) => `${Math.round(100 * x)}%`;
 
-for (const [train, test] of [["1023", "1022"], ["1022", "1023"]]) {
+for (const [train, test] of [["1023", "1022"], ["1022", "1023"], ["1022", "1022"], ["1023", "1023"]]) {
   const tr = data[train];
   const te = data[test];
   const w = fit(tr.cands.map(features), tr.cands.map((c) => (c.human ? 1 : 0)));
