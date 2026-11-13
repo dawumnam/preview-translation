@@ -2,18 +2,21 @@
 //
 //   bun previewgen/run.ts <video> --template <earlier preview .hwp|.hwpx> [--id 1023] [--out <dir>]
 //       [--about "<place and subject of the shoot>"] [--reference <human preview .hwpx>] [--fresh]
-//       [--no-shot-pass] [--shot-model gemini-3.8-flash] [--notes fewer] [--by-camera-file]
+//       [--shot-pass] [--shot-model gemini-3.8-flash] [--notes fewer] [--scene-levels 2] [--by-camera-file]
 //
 // Writes <out>/<id>_preview (.hwpx, .txt): the flat list of the human
 // previews. All other files go to <out>/<id>_preview_work/. Without
 // --template only the text file is written. With --reference the result is
 // scored against a human preview.
 //
-// Which speech lines show a TC follows the clock of the human writers
+// Which speech lines show a TC follows the clock of the human writer
 // (placeTc in assemble.ts). All shot notes of the model stay.
+// --shot-pass        adds the shot lines of a picture-only pass: more lines
+//                    than the writer makes (up to 1.6 times).
 // --notes fewer      leaves out a note inside a take that comes less than 10 s
-//                    after the last TC: a count of shot lines nearer to that of
-//                    a human preview, but less of its content.
+//                    after the last TC.
+// --scene-levels 2   scenes on two levels (place, then activity): two times as
+//                    many scene lines as the writer makes.
 // --by-camera-file   also writes <id>_preview_by_camera_file: one head line
 //                    for each camera file (see cliplayout.ts).
 import { execFileSync } from "child_process";
@@ -68,10 +71,11 @@ async function main() {
   const t0 = performance.now();
   const dur = await mediaDuration(media);
 
-  // 1. Watch: every window to the model at the same time, in two passes.
-  // The usual pass gets picture and sound and writes shots and turns. The
-  // picture-only pass (a cheaper model, no sound) writes shot lines only; it
-  // finds notes inside a take that the usual pass leaves out.
+  // 1. Watch: every window to the model at the same time. The model gets
+  // picture and sound and writes shots and turns. With --shot-pass a second,
+  // picture-only pass (a cheaper model, no sound) adds shot lines: more of the
+  // writer's lines are found, but most of the added lines are not the writer's
+  // (see README, fourth round).
   const saved = (file: string, s: GenSettings): WindowOut[] => {
     if (process.argv.includes("--fresh") || !fs.existsSync(file)) return [];
     const old = JSON.parse(fs.readFileSync(file, "utf-8")) as GenFile;
@@ -79,8 +83,9 @@ async function main() {
   };
   const winPath = path.join(workDir, "windows.json");
   const shotPath = path.join(workDir, "shots.json");
-  const shotSettings: GenSettings = { ...settings, model: arg("shot-model", "gemini-3.8-flash")!, only: "shots" };
-  const withShots = !process.argv.includes("--no-shot-pass");
+  // The picture-only pass keeps the shot rules of the second round: it is there to add lines.
+  const shotSettings: GenSettings = { ...settings, model: arg("shot-model", "gemini-3.8-flash")!, only: "shots", rules: "round2" };
+  const withShots = process.argv.includes("--shot-pass");
   const [main, extra] = await Promise.all([
     watch(media, workDir, settings, 0, Infinity, saved(winPath, settings)),
     withShots ? watch(media, workDir, shotSettings, 0, Infinity, saved(shotPath, shotSettings)) : undefined,
@@ -114,7 +119,8 @@ async function main() {
   const cast = !manual ? await unifyCast(both, textModel) : notes.length ? castFromAnswer(notes, answer<CastAnswer>("cast", buildCastPrompt(notes))) : { rename: new Map(), persons: [] };
   const merged = joinShots(mergeWindows(applyCast(windows, cast), cuts), mergeWindows(applyCast(shotWindows, cast), cuts), cuts);
   const styled = placeTc(applyStyle(merged, HOUSE_STYLE), { ...RHYTHM, noteGap: arg("notes") === "fewer" ? FEWER_NOTES_GAP : RHYTHM.noteGap });
-  const lines = manual ? applyScenes(styled, answer<SceneAnswer>("scenes", buildScenePrompt(styled))) : await addScenes(styled, textModel);
+  const levels = arg("scene-levels") === "2" ? 2 : 1;
+  const lines = manual ? applyScenes(styled, answer<SceneAnswer>("scenes", buildScenePrompt(styled, levels)), levels) : await addScenes(styled, textModel, levels);
   const tText = performance.now();
 
   // 5. Write.

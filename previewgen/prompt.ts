@@ -72,6 +72,8 @@ export interface PromptOptions {
   shotsOnly?: boolean;
   /** Count of examples (a clip and the lines of a human writer for it) that stand before this clip in the request. */
   examples?: number;
+  /** "round2": the shot rules of the second round. Not set: the rules that follow the writer's habits. */
+  rules?: "round2";
 }
 
 const mmss = (sec: number) => {
@@ -128,6 +130,38 @@ When a crew member does both in one turn, split it: the part about the content i
 
 `;
 
+/**
+ * When the writer makes a shot line (nine Georgia previews; see README, fourth
+ * round): after a camera cut in 9 of 10 cases; inside a take for a new view, a
+ * new subject or a new step of an activity; nearly never while people only
+ * stand or sit and talk.
+ */
+function shotCases(o: PromptOptions, hasCuts: boolean): string {
+  return `A shot entry says what the picture shows from that moment on. A 프리뷰어 writes one entry for each new picture, not one for each thing that happens in it. Write a shot entry in these cases only:
+1. A jump to a new camera file${hasCuts ? " (the times above)" : ""}. \`t\` is the time of the jump. Each take gets its own entry, also when it shows the same action as the take before. The one exception: a new camera file that only goes on with the same people, the same talk and the same place as the file before gets no shot entry (the next speech entry carries the time).
+2. Inside a camera file, when the picture becomes a new picture. \`t\` is the moment it starts:
+   - A new take with no jump of the picture: the host goes back to his place and does the same action or says the same lines again.
+   - A new view: the host comes towards the camera (걸어오는 큐 정면), passes it, and the camera shows him from the back (걸어가는 큐 후면): two entries. The camera goes with the people into a house or a room, out of it, up the stairs, out of a car: one entry for each new place.
+   - A new subject: the camera leaves the people and shows a thing, a detail or the scenery, or it comes back to the people. A travelling shot comes to a new place.
+   - An activity: the people do something with their hands or bodies that the programme is about (they cook, gather fruit, make or repair a thing, eat and drink at a table, feed animals). Here the picture is the story, also when the people talk all the time. Write a shot entry about every 10 to 20 seconds: each time the picture shows a new step, another person, or the same people from another side. Say who is in the picture and what they do at that moment: 호두 줍는 큐 / 검남, 호두 줍는 큐 / 가리키는 검남 / 담 넘어가는 큐 / 돌로 호두 깨는 cs / 반죽 미는 두여 / 빵 먹는 큐. When a turn of talk starts at the same moment, the shot entry comes first.
+   - A hand or a slate covers the lens: 슬레이트. Write it also when it is there for one second only.
+3. No shot entry while people only talk: they stand, sit or walk about and talk (an interview, a conversation through the interpreter, a tour of a house, the host's lines to the camera). The speech entries carry the time there. This holds also when the camera changes from one speaker to the other or zooms, and when the people point at something, look at something, nod or laugh. The next shot entry comes when they go to another place or start an activity.
+Outside an activity, one entry for one picture: no second entry for the next small action in the same picture (he walks to the door and then opens it: one entry), and no entry that says the same as the entry before while the camera file goes on. As a guide: inside a camera file, an activity has 3 to 5 shot entries a minute, a walk or a travelling shot 1 to 2, and an interview none.${o.startsAtCut === false ? " Do not write a shot entry at 00:00: the take was already running." : ""}`;
+}
+
+/** The shot rules of the second round: more entries, and more of the writer's lines found. Kept for comparison. */
+function shotCasesRound2(o: PromptOptions, hasCuts: boolean, speech: boolean): string {
+  return `Write a shot entry in each of these cases:
+1. A jump to a new camera file${hasCuts ? " (the times above)" : ""}. \`t\` is the time of the jump. Each take gets its own entry, also when it shows the same action as the take before. The one exception: a new camera file that only goes on with the same people, the same talk and the same place as the file before gets no shot entry (the next speech entry carries the time).
+2. Inside a camera file, each time one of these happens. \`t\` is the moment it starts:
+   - A new take starts with no jump of the picture: the host goes back to his place and does the same action or says the same lines again.
+   - The people start a new action: they meet, shake hands, hug, go in, come out, sit down, start to eat or drink, take something in their hands, say goodbye, walk off. Write this entry also when they talk at the same time.
+   - The camera comes to a new subject or a new place: it turns from the house to the hills; a travelling shot comes from the street to a door, then up the stairs, then onto the roof (one entry for each). In a work process (cooking, building, harvest) each new step is an entry: 감자 써는 손, then 냄비에 넣는, then 젓는.
+   - A hand or a slate covers the lens: 슬레이트. Write it also when it is there for one second only.
+3. A long shot with no talk in which the picture stays of one kind (the view from a moving car, people far away in a wide shot): a new entry about every 30 seconds, with the same words.
+Do not write a shot entry when only the framing changes while people ${speech ? "talk" : "stand or sit and talk"} in one place (the camera zooms, or turns from one speaker to the other).${o.startsAtCut === false ? " Do not write a shot entry at 00:00: the take was already running." : ""}`;
+}
+
 export function buildLogPrompt(o: PromptOptions): string {
   const dur = Math.round(o.durationSec);
   const cuts = (o.cuts ?? []).filter((c) => c > 1 && c < dur - 1);
@@ -149,15 +183,7 @@ ${o.startsAtCut === false ? "This clip starts in the middle of a take.\n" : ""}$
 - Locals. They speak Georgian (ka), sometimes Russian (ru) or English (en). Give each local a short Korean label by look. An old man is 할, an old woman is 할머, a child is 아이. For other people: one syllable for the colour of the clothes (검, 흰, 파, 초, 빨, 갈, 회, 베) or for a clear feature (두 = 두건, 모 = 모자, 안 = 안경, 수 = 수염), then 남 or 여: 검남, 흰여, 두여, 모남, 안여, 수남. Use one label for one person through the whole clip, also when the camera shows the person from another side.${o.cast ? `\n\nPeople already named in this episode. When one of them is in the clip, use that label:\n${o.cast}` : ""}
 
 ## Shot entries (kind "shot", use "none")
-Write a shot entry in each of these cases:
-1. A jump to a new camera file${cuts.length ? " (the times above)" : ""}. \`t\` is the time of the jump. Each take gets its own entry, also when it shows the same action as the take before. The one exception: a new camera file that only goes on with the same people, the same talk and the same place as the file before it gets no shot entry (the next speech entry carries the time).
-2. Inside a camera file, each time one of these happens. \`t\` is the moment it starts:
-   - A new take starts with no jump of the picture: the host goes back to his place and does the same action or says the same lines again.
-   - The people start a new action: they meet, shake hands, hug, go in, come out, sit down, start to eat or drink, take something in their hands, say goodbye, walk off. Write this entry also when they talk at the same time.
-   - The camera comes to a new subject or a new place: it turns from the house to the hills; a travelling shot comes from the street to a door, then up the stairs, then onto the roof (one entry for each). In a work process (cooking, building, harvest) each new step is an entry: 감자 써는 손, then 냄비에 넣는, then 젓는.
-   - A hand or a slate covers the lens: 슬레이트. Write it also when it is there for one second only.
-3. A long shot with no talk in which the picture stays of one kind (the view from a moving car, people far away in a wide shot): a new entry about every 30 seconds, with the same words.
-Do not write a shot entry when only the framing changes while people ${speech ? "talk" : "stand or sit and talk"} in one place (the camera zooms, or turns from one speaker to the other).${o.startsAtCut === false ? " Do not write a shot entry at 00:00: the take was already running." : ""}
+${o.rules === "round2" ? shotCasesRound2(o, cuts.length > 0, speech) : shotCases(o, cuts.length > 0)}
 
 \`text\` is a short Korean phrase that ends in a noun, 3 to 15 characters: who or what is in the picture and what they do. This is the house style:
 - 걸어가는 큐 후면 / 걸어오는 큐 정면 / 걸어가는 큐 측면 (the host walks away from, towards or past the camera)

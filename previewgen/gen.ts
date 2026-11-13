@@ -49,6 +49,8 @@ export interface GenSettings {
   only?: "shots";
   /** A JSON file with examples (see ExampleSpec): clips of other episodes with the lines of the human writer. */
   examples?: string;
+  /** "round2": the shot rules of the second round (see prompt.ts). */
+  rules?: "round2";
 }
 
 /** An example for the model: a stretch of another episode and the preview that a human wrote for that episode. */
@@ -199,6 +201,7 @@ export async function watch(media: string, workDir: string, s: GenSettings, from
         cast: s.cast || undefined,
         shotsOnly: s.only === "shots",
         examples: ex?.count,
+        rules: s.rules,
       });
       const r = await callJson<RawWindow>({
         model: s.model,
@@ -248,6 +251,7 @@ async function main() {
     tag: arg("tag", "")!,
     ...(arg("only") === "shots" ? { only: "shots" as const } : {}),
     ...(arg("examples") ? { examples: arg("examples")! } : {}),
+    ...(arg("rules") === "round2" ? { rules: "round2" as const } : {}),
   };
   let have: WindowOut[] = [];
   if (fs.existsSync(outPath)) {

@@ -206,6 +206,8 @@ export interface Score {
   shot: { ref: number; gen: number; matched: number; dice: number; medianOffset: number };
   /** Human shot lines apart: those that stand at a camera cut, and those inside a take. */
   shotAt: { cutRef: number; cutFound: number; insideRef: number; insideFound: number };
+  /** For each human shot line that has a generated shot line at its place: [line number, position of that line in `gen`]. */
+  shotPairs?: [number, number][];
   time: { lines: number; medianAbs: number; within3: number; within5: number };
   /** For each human speech line that has a match in the output: [line number, time of the generated line]. */
   lineTimes?: [number, number][];
@@ -217,7 +219,14 @@ export function score(gen: PreviewLine[], gtAll: GtLine[], ranges: [number, numb
   const inRange = (t: number) => ranges.some(([a, b]) => t >= a && t < b);
   const gt = gtAll.filter((l) => inRange(l.tcPrev));
   // The times that the document shows are compared (see CUT_LAG in assemble.ts).
-  const g = gen.filter((l) => inRange(l.tc!)).map((l) => (l.tcDoc !== undefined ? { ...l, tc: l.tcDoc } : l)).sort((a, b) => a.tc! - b.tc!);
+  const order = gen
+    .map((l, i) => ({ l, i }))
+    .filter((x) => inRange(x.l.tc!))
+    .map((x) => ({ l: x.l.tcDoc !== undefined ? { ...x.l, tc: x.l.tcDoc } : x.l, i: x.i }))
+    .sort((a, b) => a.l.tc! - b.l.tc!);
+  const g = order.map((x) => x.l);
+  /** Position in `gen` of each generated shot line. */
+  const genShotAt = order.filter((x) => x.l.kind === "shot").map((x) => x.i);
 
   // --- Korean text ---
   const refSpeech = gt.filter((l) => l.kind === "speech" && !isDirection(l) && normText(l.text).length > 0);
@@ -435,6 +444,7 @@ export function score(gen: PreviewLine[], gtAll: GtLine[], ranges: [number, numb
     direction: stat.D,
     shot: { ref: refShot.length, gen: genShot.length, matched: shotPairs.length, dice: dice.length ? dice.reduce((x, y) => x + y, 0) / dice.length : NaN, medianOffset: median(offs) },
     shotAt,
+    shotPairs: shotPairs.map(([i, j]) => [refShot[i].no, genShotAt[j]]),
     tc: {
       ref: refTcs.length,
       within5: refTcs.filter((t) => nearAny(t, myTcs, 5)).length,

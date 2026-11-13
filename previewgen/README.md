@@ -2,7 +2,7 @@
 
 Writes the preview document (프리뷰 노트) of a day of raw footage from the video alone. This is the document that a human 프리뷰어 writes before the scriptwriter marks the `@@` lines for translation: scene headers, a TC and a description for each shot, the Korean speech word for word with speaker labels, `@@(조)` for each foreign-language turn, and `디렉` for directions.
 
-Status: an experiment on branch `preview-gen-experiment`. It was tuned on Georgia 1023 and on stretches of 1104 and 1105, and tested on 1022. The sections below are in the order of the work: the first round (prompts 1 to 3, one pass), the second round (shot rules, a picture-only pass, two-level scenes, the camera-file layout), and the third round (where the writers put a TC line; the TC clock). `run.ts` does what the third round says. The translator in `src/` is not changed, except for two small additions to `src/llm.ts` (extra `generationConfig` fields, token count for each media type) and one export in `src/script.ts`.
+Status: an experiment on branch `preview-gen-experiment`. It was tuned on Georgia 1023 and on stretches of 1104 and 1105, and tested on 1022. The sections below are in the order of the work: the first round (prompts 1 to 3, one pass), the second round (shot rules, a picture-only pass, two-level scenes, the camera-file layout), the third round (where the writers put a TC line; the TC clock), and the fourth round (the writer's count of shot lines: new shot rules, one pass, scenes on one level). `run.ts` does what the fourth round says. The translator in `src/` is not changed, except for two small additions to `src/llm.ts` (extra `generationConfig` fields, token count for each media type) and one export in `src/script.ts`.
 
 ## Run
 
@@ -14,7 +14,9 @@ bun previewgen/run.ts <video>.mp4 --template <earlier>.hwpx --out <dir> --refere
 Run it from the project root (bun reads `GEMINI_API_KEY` from `.env`). It needs `ffmpeg`, and for a `.hwp` template the Homebrew OpenJDK (as the translator does).
 
 - `<dir>/<id>_preview.hwpx` and `.txt`: the document as a flat list, like the human previews. `<id>` is the first four digits in the name of the video.
+- `--shot-pass`: adds the shot lines of a picture-only pass (`gemini-3.8-flash`). More of the writer's shot lines are found, but the document has up to 1.6 times the writer's count (see the fourth round below).
 - `--notes fewer`: fewer shot lines inside a take (see the third round below).
+- `--scene-levels 2`: scenes on two levels (place, then activity), with two times as many scene lines.
 - `--by-camera-file`: also writes `<id>_preview_by_camera_file.hwpx` and `.txt`, with one head line for each camera file (see below). It is not the target layout.
 - `<dir>/<id>_preview_work/`: cut list, decoded sound, clips, `windows.json` (every turn that the model heard, with its tag and its exact time) and `preview.json` (the lines of the document with exact times).
 - `--template`: an earlier preview of the same programme. Page setup, fonts and styles come from it. Without it only the text file is written.
@@ -181,6 +183,85 @@ What `run.ts` does now: all shot notes stay; `placeTc()` decides with the clock 
 
 Open: a bar for the notes inside a take. Agreement of 95% with one writer's free choices is not in reach of the methods above. The right reference is how far two human writers agree on the same footage; no footage with two previews was at hand.
 
+## Fourth round: the writer's count of lines (14 November 2026)
+
+New facts from the client side: one writer made all nine previews, there is no written guideline, and the editors do not accept more shot lines than the writer makes. So the target changed: about the writer's count of shot lines, and at that count as many lines as possible at the writer's places. Below, "found" is the share of the writer's shot lines that have an output shot line at their place (10 s before to 5 s after), "right place" is the share of the output shot lines that stand at a writer's line, and "balance" is the F1 of the two.
+
+### What the saved outputs said (no model call)
+
+| Question | Result |
+|---|---|
+| Which machine shot lines does the writer also have? (1023 / 1022, two passes of the third round) | At a cut: 85% / 76%. Inside a take, in both passes: 52% / 53%. Inside a take, picture-only pass alone: 11% / 22%; with talk around it: 5% / 3%. |
+| Can code choose the right lines? | No better than before. Logistic regression on 13 features (pass, kind of note, talk around, seconds since the last line and the last cut), fitted on one episode and tested on the other: balance 71% and 67% at the writer's count. Rules by hand: 70 to 75%. Votes of two runs: no gain. |
+| Does the writer make a shot line after each cut? (1,405 cuts, nine episodes) | 88%. Takes of 12 to 20 s: 97%. Takes under 8 s: 41%. A weak jump of the picture (scene score 0.1 to 0.15): 71%. |
+| Where are the writer's shot lines that are not at a cut? (1,426) | 55% have no speech line next to them, 18% stand between two speech lines, 12% repeat the words of the shot line before. By episode, 5% to 54% stand between speech lines. |
+
+### How the writer works
+
+Read on the tuning stretches, side by side with the machine log (`study/peek.ts`):
+
+- **Talk.** People only stand, sit or walk about and talk (an interview, a tour of a house, the host's lines to the camera): the speech lines carry the TCs. There is no shot line when the camera changes between the speakers. A shot line comes when the people go to another place.
+- **Activity.** People do something that the programme is about, also while they talk (they gather walnuts, cook, eat): the writer first makes a shot line with the TC (who does what now), then the speech lines with no TC, about every 10 to 20 s. In ten minutes of 1025 (walnut harvest, one camera file) the writer has 37 shot lines; the rules of the second round gave 11.
+- **One view, one line.** The host comes towards the camera, passes it, and the camera shows him from the back: two lines. A third action in the same view gets no line.
+
+The shot rules in `prompt.ts` now say this. The picture-only pass is off (`--shot-pass` turns it on): most of its added lines are not the writer's.
+
+### Results
+
+Test stretches: 85 minutes from seven episodes (`study/dev_eval.ts`; 55 minutes were used to write the rules, 30 minutes from 1024, 1028 and 1029 were added after that). One pass with picture and sound, no choice of lines by code:
+
+| Rules | Shot lines against the writer's count | Found | Right place | Balance |
+|---|---|---|---|---|
+| Second round, main pass alone (55 min) | 1.03 times | 68% | 66% | 67% |
+| New, without the activity rule (55 min) | 0.86 times | 64% | 74% | 68% |
+| New (55 min) | 0.93 times | 72% | 77% | 75% |
+| New (85 min), first run | 1.01 times | 78% (at a cut 94%, inside a take 64%) | 77% | 77% |
+| New (85 min), second run | 1.02 times | 77% (93%, 64%) | 76% | 76% |
+| New, the 30 minutes that were added later | 1.11 times | 86% | 77% | 81% |
+
+Full episodes with the new rules (`run.ts`, one pass):
+
+| | 1022 (110 min; not used for these rules) | 1103 (133 min; never used before) |
+|---|---|---|
+| Shot lines against the writer's count | 204 for 175 (1.17 times) | 225 for 325 (0.69 times) |
+| Found | 78% (at a cut 91%, inside a take 64%) | 59% (87%, 45%) |
+| Right place | 67% | 86% |
+| Balance | 72% | 70% |
+| Korean lines found | 92% | 68% (82% of the characters) |
+| Foreign-language turns found, and share of the output turns that are the writer's | 90%, 75% | 92%, 48% |
+| The writer's TCs with an output TC within 5 s / 10 s | 78% / 91% | 78% / 94% |
+| Scene starts found (one level) | 5 of 9 with 10 scenes (7 of 9 with 13 in a second run of the scene step) | 7 of 8 with 17 scenes (5 of 8 with 16) |
+| Cost | 2.12 USD | 2.71 USD |
+
+- 1022 with the two passes of the third round: 1.59 times the lines, found 87%, right place 55%, balance 67%.
+- 1103 is footage of an activity with talk (beekeeping). The output has too few shot lines there. The Korean lines that are not found are mostly short (네, 가방, 1시간) or foreign words that the writer wrote in Korean letters (베리 굿, 까마르조바), which the output marks as foreign-language turns.
+- The picture-only pass as a filler (`study/gate_eval.ts`: its lines only where nobody talks, or only where the main pass has notes near it): the balance stays between 70% and 77% on the test stretches, on 1022 and on 1103, with each setting. More lines find more of the writer's lines and put more lines at other places.
+
+**Two runs of the same prompt against each other** (`study/self_agree.ts`, the 85 minutes): 83% of the shot lines of one run have a shot line of the other run at the same place (at a cut 96%, inside a take 69%). Against the writer the same runs have 76 to 77% (at a cut 93 to 94%, inside a take 64%). So the output is nearly as near to the writer as to its own second run. A bar of 95% for the lines inside a take is above what one model reaches against itself.
+
+### Scenes
+
+The scene step has one level now, as the human previews, with rules for the kinds of footage at which the writer starts a scene (`scenes.ts`; `--scene-levels 2` gives the two levels of the second round).
+
+| Scene step, on the nine human previews with the `#` lines taken out (104 scenes) | Scenes made | Writer's starts found within 30 s (90 s) |
+|---|---|---|
+| One level, rules only (the default) | 137 | 70% (80%) |
+| One level, rules and the scene tables of the other days as examples | 129 | 66% (76%) |
+| Two levels | 203 | 76% (87%) |
+
+On machine logs (1022, 1103, and the 1023 log of the third round) the one-level step finds 16 of 23 starts with 39 scenes; two runs of it on the same log differ (see the table above). Some scene starts that are not found are 2 to 4 minutes from the writer's: the same part of the day, cut at another event.
+
+### What `run.ts` does now
+
+One pass (`gemini-4-argon`, picture and sound) with the new shot rules; the TC clock of the third round; scenes on one level. Cost: about 1.2 USD for each hour of video (2.12 and 2.71 USD for the two episodes above), at the November 2026 price.
+
+### Open
+
+- The bar. Agreement of 95% with the writer's lines inside a take is not in reach: every method of four rounds ends between 70% and 77% at the writer's count, and the model agrees with its own second run at 83%. Lines at a cut are at 91 to 96%.
+- In activity footage the output has too few shot lines (1103: 0.69 times), in footage with little talk a few too many (1022: 1.17 times).
+- Scene starts: about 70% at 1.3 to 1.7 times the writer's count.
+- Speech in footage with several locals who talk to each other (1103).
+
 ## Relation to the translator
 
 `preview.json` has the exact start time of each `@@` line. The translator (`src/`) finds the speech of a marker between the TCs that a human typed; with a generated preview it can take the time of the line itself.
@@ -205,4 +286,4 @@ Open: a bar for the notes inside a take. Agreement of 95% with one writer's free
 | `score.ts` | CLI: compare an output with a human preview (`--list` shows each difference) |
 | `show.ts` | CLI: print an output next to the human preview |
 | `previewgen.test.ts` | `bun test previewgen` |
-| `study/` | The scripts behind the numbers in this file (`tcstudy.ts`, `tchazard.ts`, `silence_study.ts`, `shotstudy.ts`, `rhythm_eval.ts`, `editor_eval.ts`, `coverage.ts`, `scenes_eval.ts` and others; `py/` has the frame, speech-activity and figure scripts). They read data under `exp/previewgen/` that is not in git: `media/<id>.mp4`, `gt/<id>.hwpx` (the human previews), `scores/<id>.txt` (ffmpeg scene score of each frame), `vad/<id>.json`, and the work directories of finished runs. |
+| `study/` | The scripts behind the numbers in this file (`tcstudy.ts`, `tchazard.ts`, `silence_study.ts`, `shotstudy.ts`, `rhythm_eval.ts`, `editor_eval.ts`, `coverage.ts`, `scenes_eval.ts` and others; `py/` has the frame, speech-activity and figure scripts). Fourth round: `candidates.ts`, `selector.ts`, `rules_eval.ts`, `takes.ts`, `inside.ts`, `cutscore.ts` (what the saved outputs and the human previews say), `peek.ts` (human preview and machine log side by side), `dev_run.ts` and `dev_eval.ts` (the test stretches), `vote_eval.ts`, `gate_eval.ts`, `self_agree.ts`, `scene_signals.ts`, `scenes_machine.ts`. They read data under `exp/previewgen/` that is not in git: `media/<id>.mp4`, `gt/<id>.hwpx` (the human previews), `scores/<id>.txt` (ffmpeg scene score of each frame), `vad/<id>.json`, and the work directories of finished runs. |

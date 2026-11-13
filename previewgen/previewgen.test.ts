@@ -10,7 +10,8 @@ import { applyCast, castFromAnswer, castNotes } from "./cast";
 import { planWindows } from "./cuts";
 import { toPreviewLines, type WindowOut } from "./gen";
 import { loadGt, renderLine, tcText, type PreviewLine } from "./gt";
-import { applyScenes } from "./scenes";
+import { buildLogPrompt } from "./prompt";
+import { applyScenes, buildScenePrompt } from "./scenes";
 import { score, scoreScenes } from "./score";
 import { documentRows, writeHwpx } from "./write";
 
@@ -305,4 +306,36 @@ test("scene lines have two levels; the document starts with a place", () => {
   const lines = [shot(0, "a"), say(5, "큐", "b"), shot(200, "c"), say(205, "큐", "d")];
   const out = applyScenes(lines, { scenes: [{ first_line: 1, level: 2, title: "마을 sk" }, { first_line: 3, level: 2, title: "검남 인터뷰" }] });
   expect(out.filter((l) => l.kind === "scene").map((l) => renderLine(l))).toEqual(["# 마을 sk", "# - 검남 인터뷰"]);
+});
+
+test("scenes on one level: a level 2 in the answer becomes a plain scene line", () => {
+  const lines = [shot(0, "a"), say(5, "큐", "b"), shot(200, "c"), say(205, "큐", "d")];
+  const out = applyScenes(lines, { scenes: [{ first_line: 1, level: 1, title: "마을 sk" }, { first_line: 3, level: 2, title: "검남 인터뷰" }] }, 1);
+  expect(out.filter((l) => l.kind === "scene").map((l) => renderLine(l))).toEqual(["# 마을 sk", "# 검남 인터뷰"]);
+  expect(buildScenePrompt(lines)).toContain("Divide the log into scenes");
+  expect(buildScenePrompt(lines, 2)).toContain("on two levels");
+});
+
+test("shot rules: the writer's habits by default, the rules of the second round on request", () => {
+  const now = buildLogPrompt({ durationSec: 300, cuts: [40], startsAtCut: true });
+  expect(now).toContain("No shot entry while people only talk");
+  expect(now).toContain("about every 10 to 20 seconds");
+  expect(now).not.toContain("every 30 seconds");
+  expect(buildLogPrompt({ durationSec: 300, cuts: [40], startsAtCut: true, rules: "round2" })).toContain("every 30 seconds");
+});
+
+test("score: the pairs of shot lines say which generated line stands at which human line", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "previewgen-"));
+  const template = path.join(dir, "template.hwpx");
+  const ref = path.join(dir, "ref.hwpx");
+  templateHwpx(template);
+  const human: PreviewLine[] = [{ kind: "scene", text: "a", tc: 0 }, shot(10, "걸어오는 큐 정면"), say(20, "큐", "여기 지붕만 있는 건물이 집인가요"), shot(60, "집 sk")];
+  writeHwpx(documentRows("1", human, 100, { ...HOUSE_STYLE, tcGap: 0 }), template, ref);
+  const gt = loadGt(ref);
+  const gen: PreviewLine[] = [shot(40, "풍경 sk"), shot(58, "집 sk"), shot(9, "걸어오는 큐")];
+  const s = score(gen, gt, [[0, 100]]);
+  const no = (text: string) => gt.find((l) => l.kind === "shot" && l.text === text)!.no;
+  expect(s.shot.matched).toBe(2);
+  expect(s.shotPairs).toEqual([[no("걸어오는 큐 정면"), 2], [no("집 sk"), 1]]);
+  fs.rmSync(dir, { recursive: true });
 });

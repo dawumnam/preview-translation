@@ -1,9 +1,10 @@
 // Prompt variants for the scene step (see scenes_eval.ts).
 import { clock } from "../../src/script";
 import type { GtLine } from "../gt";
+import { SCENE_INTRO, SCENE_RULES } from "../scenes";
 import type { Body } from "./scenes_eval";
 
-export type Variant = "base" | "fewshot" | "fewshot2" | "levels";
+export type Variant = "base" | "fewshot" | "fewshot2" | "levels" | "kinds" | "rules";
 
 export const SCENE_SCHEMA_V = {
   type: "OBJECT",
@@ -74,8 +75,43 @@ The title is a short Korean phrase that ends in a noun, in the style of the shot
 
 Return the parts in order. \`first_line\` is the number of the first line of the part, \`level\` is 1 or 2. The first part starts at line 1 with level 1. A part starts at a shot line when there is one at the change.`;
 
+/** The "#" lines of a finished log as a table: start, length, shot lines, speech lines, title. */
+export function toc(b: Body): string {
+  const timeOf = (k: number) => b.lines[Math.min(b.lines.length - 1, k)].tc ?? b.lines[Math.min(b.lines.length - 1, k)].tcPrev;
+  const end = timeOf(b.lines.length - 1);
+  return b.scenes
+    .map((s, i) => {
+      const to = b.scenes[i + 1]?.at ?? b.lines.length;
+      const part = b.lines.slice(s.at, to);
+      const len = ((b.scenes[i + 1] ? timeOf(b.scenes[i + 1].at) : end) - timeOf(s.at)) / 60;
+      return `[${clock(timeOf(s.at))}] ${len.toFixed(0)} min, ${part.filter((l) => l.kind === "shot").length} shot lines, ${part.filter((l) => l.kind !== "shot").length} speech lines: # ${s.title}`;
+    })
+    .join("\n");
+}
+
 export function buildScenePromptV(v: Variant, lines: GtLine[], others: Body[], id: string): string {
   if (v === "levels") return `${LEVELS}\n\n## Log\n${numbered(lines)}`;
+  // The prompt of scenes.ts as it is: the rules with no example.
+  if (v === "rules") return `${SCENE_INTRO}\n\n${SCENE_RULES}\n\n## Log\n${numbered(lines)}`;
+  if (v === "kinds") {
+    // The scene tables of all other days, and the shortest other day in full.
+    const full = [...others].sort((a, b) => a.lines.length - b.lines.length)[0];
+    return `${SCENE_INTRO}
+
+${SCENE_RULES}
+
+## Scene tables of other days
+The scenes that the 프리뷰어 made for other days of the same programme: start, length, count of lines, title. Learn from them how long a scene is and how a title is worded.
+
+${others.map((b, i) => `### Day ${i + 1}\n${toc(b)}`).join("\n\n")}
+
+## One other day in full
+${example(full)}
+
+## The new log
+Divide this log. It has no "#" lines yet.
+${numbered(lines)}`;
+  }
   if (v === "base") {
     return `${INTRO}\n\n${RULES}\n\nA scene is seldom shorter than three minutes; most are 5 to 25 minutes, and two hours of footage have about 6 to 12 scenes.\n\n## Log\n${numbered(lines)}`;
   }
