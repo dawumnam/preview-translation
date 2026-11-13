@@ -20,7 +20,7 @@
 // - Times: how far the generated time is from the TC that the writer typed.
 import fs from "fs";
 import { loadGt, renderLine, type GtLine, type PreviewLine } from "./gt";
-import { applyStyle, HOUSE_STYLE, mergeWindows, tcShown, type StyleOptions } from "./assemble";
+import { applyStyle, HOUSE_STYLE, joinShots, mergeWindows, tcShown, type StyleOptions } from "./assemble";
 import type { GenFile } from "./gen";
 
 const CORE = new Set(["큐", "코", "피", "카감"]);
@@ -488,7 +488,13 @@ if (import.meta.main) {
   if (opt("foreign-gap")) style.foreignGap = parseFloat(opt("foreign-gap")!);
   if (opt("direct-min")) style.directMin = parseFloat(opt("direct-min")!);
   if (opt("shot-window")) [SHOT_WINDOW[0], SHOT_WINDOW[1]] = opt("shot-window")!.split(",").map(parseFloat);
-  const lines = applyStyle(mergeWindows(gen.windows, gen.cuts ?? []), style);
+  // --shots <gen.json>: the shot lines of a picture-only pass are joined in (see joinShots).
+  let merged = mergeWindows(gen.windows, gen.cuts ?? []);
+  if (opt("shots")) {
+    const extra = JSON.parse(fs.readFileSync(opt("shots")!, "utf-8")) as GenFile;
+    merged = joinShots(merged, mergeWindows(extra.windows, gen.cuts ?? []), gen.cuts ?? []);
+  }
+  const lines = applyStyle(merged, style);
   // --ranges 820-1120,2850-3150 : score only these stretches.
   const ri = process.argv.indexOf("--ranges");
   const ranges: [number, number][] =

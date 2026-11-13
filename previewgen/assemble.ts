@@ -58,6 +58,37 @@ export function mergeWindows(windows: WindowOut[], cuts: number[]): PreviewLine[
 }
 
 /**
+ * Adds the shot lines of a picture-only pass to the lines of the usual pass.
+ *
+ * The usual pass (picture and sound in one call) finds the shot lines at a
+ * camera cut, but only half of the human shot lines inside a take. A pass
+ * that gets the picture alone finds more of them. On stretches of three
+ * episodes the two together have a shot line at 94% of the human shot lines
+ * (78% for the usual pass alone), with about 1.4 times the lines of the human.
+ *
+ * A line of the picture-only pass is added when the usual pass has no shot
+ * line within `near` seconds of it. That pass does not hear the talk, so it
+ * also writes a line where a new camera file only goes on with the same talk;
+ * such a line is left out when the talk of the usual pass runs across the cut.
+ */
+export function joinShots(base: PreviewLine[], extra: PreviewLine[], cuts: number[], near = 6): PreviewLine[] {
+  const baseShots = base.filter((l) => l.kind === "shot").map((l) => l.tc!);
+  const talk = base.filter((l) => l.kind !== "shot" && l.use !== "direct").map((l) => l.tc!);
+  const added: PreviewLine[] = [];
+  for (const l of extra) {
+    if (l.kind !== "shot") continue;
+    const t = l.tc!;
+    if (baseShots.some((b) => Math.abs(b - t) <= near)) continue;
+    const last = added[added.length - 1];
+    if (last && t - last.tc! <= near) continue;
+    const atCut = cuts.some((c) => Math.abs(c - t) <= 2.5);
+    if (atCut && talk.some((x) => x >= t - 4 && x < t) && talk.some((x) => x >= t && x <= t + 4)) continue;
+    added.push({ ...l });
+  }
+  return [...base, ...added].map((l, i) => ({ l, i })).sort((a, b) => Math.floor(a.l.tc!) - Math.floor(b.l.tc!) || a.i - b.i).map((x) => x.l);
+}
+
+/**
  * Applies the house style to merged lines.
  *
  * Between two turns that stay in the document there is at most one 디렉 line,

@@ -2,7 +2,7 @@
 
 Writes the preview document (프리뷰 노트) of a day of raw footage from the video alone. This is the document that a human 프리뷰어 writes before the scriptwriter marks the `@@` lines for translation: scene headers, a TC and a description for each shot, the Korean speech word for word with speaker labels, `@@(조)` for each foreign-language turn, and `디렉` for directions.
 
-Status: an experiment on branch `preview-gen-experiment`. It was measured on one episode (Georgia 1023, 99 minutes). The translator in `src/` is not changed, except for two small additions to `src/llm.ts` (extra `generationConfig` fields, token count for each media type) and one export in `src/script.ts`.
+Status: an experiment on branch `preview-gen-experiment`. It was tuned on Georgia 1023 and on stretches of 1104 and 1105, and tested on 1022. The sections below are in the order of the work: the first round (prompts 1 to 3, one pass), then the second round (shot rules, a picture-only pass, two-level scenes, the camera-file layout), which is what `run.ts` does now. The translator in `src/` is not changed, except for two small additions to `src/llm.ts` (extra `generationConfig` fields, token count for each media type) and one export in `src/script.ts`.
 
 ## Run
 
@@ -13,7 +13,8 @@ bun previewgen/run.ts <video>.mp4 --template <earlier>.hwpx --out <dir> --refere
 
 Run it from the project root (bun reads `GEMINI_API_KEY` from `.env`). It needs `ffmpeg`, and for a `.hwp` template the Homebrew OpenJDK (as the translator does).
 
-- `<dir>/<id>_preview.hwpx` and `<dir>/<id>_preview.txt`: the document. `<id>` is the first four digits in the name of the video.
+- `<dir>/<id>_preview.hwpx` and `.txt`: the document as a flat list, like the human previews. `<id>` is the first four digits in the name of the video.
+- `<dir>/<id>_preview_by_camera_file.hwpx` and `.txt`: the same content with one head line for each camera file (see below).
 - `<dir>/<id>_preview_work/`: cut list, decoded sound, clips, `windows.json` (every turn that the model heard, with its tag and its exact time) and `preview.json` (the lines of the document with exact times).
 - `--template`: an earlier preview of the same programme. Page setup, fonts and styles come from it. Without it only the text file is written.
 - A second run uses the windows that are already in the work directory. `--fresh` sends all windows again.
@@ -108,6 +109,23 @@ What was measured:
 | TC of a shot line at a cut: the cut, or a little after it? | The document now shows cut + 2 s (`CUT_LAG`): within 3 s of the writer's TC for 88% of such lines, against 76% with the cut itself. |
 | TCs of any kind of line | The output shows a TC within 10 s of 96% of the human TCs, and within 5 s of 79 to 89%. |
 | Scene starts, tested on the human previews (the "#" lines taken out, then asked for) | Base prompt: 66 of 104 human scene starts found within 30 s (63%), 115 scenes made. With two other episodes as examples: 71 found (68%), 137 made. The model starts scenes at the same moments as the writer, but it divides long visits that the writer left as one scene. |
+
+### Test on an episode that was not used for tuning: 1022 (110 minutes)
+
+`run.ts` now sends each window two times: the usual pass (`gemini-4-argon`, picture and sound) and a picture-only pass (`gemini-3.8-flash`, shot entries only; `--no-shot-pass` turns it off). `joinShots()` adds the shot lines of the second pass where the first has none. The names step and the scenes step ran with Gemini. Time 130 s, cost 2.48 USD (2.07 for the usual pass and the text steps, 0.41 for the picture-only pass).
+
+| What | Result against the human preview of 1022 |
+|---|---|
+| Korean lines found | 115 of 123 (93%); same speaker 95% |
+| Foreign-language turns found | 119 of 135 (88%); same speaker 93% |
+| Shot lines found | 152 of 175 (87%): at a camera cut 89 of 95 (94%), inside a take 63 of 80 (79%) |
+| Generated shot lines | 278 against 175; 55% have a human shot line at their place |
+| A shown TC of the output near a human TC (any kind of line) | within 5 s for 87%, within 10 s for 96% |
+| Scene starts | 6 of 9 human scene starts within 30 s; 15 parts on two levels. Titles such as 빵 만드는 두여, 두여 인터뷰 are the same as the writer's. |
+| Main local | 두여, the label of the human writer |
+| Camera files | 115; 7 of them have no description of their own (the talk went on over the cut) |
+
+So the stretches used for tuning gave 93% for shot lines and the test episode 87%. The missed lines are for the most part one more pan or tilt on a subject that the output has a line for.
 
 ## A layout with the camera file as the unit (`cliplayout.ts`)
 

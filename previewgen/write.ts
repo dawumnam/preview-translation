@@ -24,15 +24,16 @@ export function documentRows(title: string, lines: PreviewLine[], durationSec: n
     { text: title, style: "title" },
     { text: RULE, style: "rule" },
   ];
-  for (const l of lines) if (l.kind === "scene") rows.push({ text: `# ${l.text}`, style: "scene" });
+  for (const l of lines) if (l.kind === "scene") rows.push({ text: renderLine(l), style: "scene" });
   rows.push({ text: RULE, style: "rule" });
   const shown = tcShown(lines, style);
   let first = true;
   lines.forEach((l, i) => {
     if (l.kind === "scene") {
-      if (!first) rows.push({ text: "", style: "body" });
+      // An empty line before a new place; a new activity at the same place follows with no gap.
+      if (!first && l.level !== 2) rows.push({ text: "", style: "body" });
       first = false;
-      rows.push({ text: `# ${l.text}`, style: "scene" });
+      rows.push({ text: renderLine(l), style: "scene" });
     } else rows.push({ text: renderLine(l, shown[i]), style: "body" });
   });
   rows.push({ text: `${tcText(durationSec)}\t영상종료`, style: "body" });

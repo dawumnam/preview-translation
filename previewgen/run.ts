@@ -2,16 +2,20 @@
 //
 //   bun previewgen/run.ts <video> --template <earlier preview .hwp|.hwpx> [--id 1023] [--out <dir>]
 //       [--about "<place and subject of the shoot>"] [--reference <human preview .hwpx>] [--fresh]
+//       [--no-shot-pass] [--shot-model gemini-3.8-flash]
 //
-// Writes <out>/<id>_preview.hwpx and <out>/<id>_preview.txt. All other files
-// go to <out>/<id>_preview_work/. Without --template only the text file is
+// Writes the document in two layouts: <out>/<id>_preview (.hwpx, .txt) is the
+// flat list of the human previews, <out>/<id>_preview_by_camera_file has one
+// head line for each camera file (see cliplayout.ts). All other files go to
+// <out>/<id>_preview_work/. Without --template only the text files are
 // written. With --reference the result is scored against a human preview.
 import { execFileSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { mediaDuration } from "../src/audio";
 import { usageReport } from "../src/llm";
-import { applyStyle, HOUSE_STYLE, mergeWindows } from "./assemble";
+import { applyStyle, HOUSE_STYLE, joinShots, mergeWindows } from "./assemble";
+import { clipRows } from "./cliplayout";
 import { applyCast, buildCastPrompt, castFromAnswer, castNotes, unifyCast, type CastAnswer } from "./cast";
 import { DEFAULT_SETTINGS, watch, type GenFile, type GenSettings, type WindowOut } from "./gen";
 import { loadGt } from "./gt";
@@ -57,16 +61,29 @@ async function main() {
   const t0 = performance.now();
   const dur = await mediaDuration(media);
 
-  // 1. Watch: every window to the model at the same time.
+  // 1. Watch: every window to the model at the same time, in two passes.
+  // The usual pass gets picture and sound and writes shots and turns. The
+  // picture-only pass (a cheaper model, no sound) writes shot lines only; it
+  // finds notes inside a take that the usual pass leaves out.
+  const saved = (file: string, s: GenSettings): WindowOut[] => {
+    if (process.argv.includes("--fresh") || !fs.existsSync(file)) return [];
+    const old = JSON.parse(fs.readFileSync(file, "utf-8")) as GenFile;
+    return JSON.stringify(old.settings) === JSON.stringify(s) && old.media === media ? old.windows : [];
+  };
   const winPath = path.join(workDir, "windows.json");
-  let have: WindowOut[] = [];
-  if (!process.argv.includes("--fresh") && fs.existsSync(winPath)) {
-    const old = JSON.parse(fs.readFileSync(winPath, "utf-8")) as GenFile;
-    if (JSON.stringify(old.settings) === JSON.stringify(settings) && old.media === media) have = old.windows;
-  }
-  const { cuts, windows } = await watch(media, workDir, settings, 0, Infinity, have);
+  const shotPath = path.join(workDir, "shots.json");
+  const shotSettings: GenSettings = { ...settings, model: arg("shot-model", "gemini-3.8-flash")!, only: "shots" };
+  const withShots = !process.argv.includes("--no-shot-pass");
+  const [main, extra] = await Promise.all([
+    watch(media, workDir, settings, 0, Infinity, saved(winPath, settings)),
+    withShots ? watch(media, workDir, shotSettings, 0, Infinity, saved(shotPath, shotSettings)) : undefined,
+  ]);
+  const { cuts, windows } = main;
+  const shotWindows = extra?.windows ?? [];
   fs.writeFileSync(winPath, JSON.stringify({ media, settings, cuts, windows, usage: usageReport() } satisfies GenFile, null, 1));
+  if (extra) fs.writeFileSync(shotPath, JSON.stringify({ media, settings: shotSettings, cuts, windows: shotWindows } satisfies GenFile, null, 1));
   const failed = windows.filter((w) => w.error);
+  const shotFailed = shotWindows.filter((w) => w.error);
   const tWatch = performance.now();
   if (failed.length > windows.length / 4) {
     console.error(`${failed.length} of ${windows.length} windows got no answer (${failed[0].error}). No document is written. Run the command again: finished windows are kept.`);
@@ -85,10 +102,11 @@ async function main() {
     console.error(`--manual-text: wrote ${name}.prompt.txt to ${workDir}. Put the answer in ${name}.answer.json and run again.`);
     process.exit(2);
   };
-  const notes = castNotes(windows);
-  const cast = !manual ? await unifyCast(windows, textModel) : notes.length ? castFromAnswer(notes, answer<CastAnswer>("cast", buildCastPrompt(notes))) : { rename: new Map(), persons: [] };
-  const named = applyCast(windows, cast);
-  const styled = applyStyle(mergeWindows(named, cuts), HOUSE_STYLE);
+  const both = [...windows, ...shotWindows];
+  const notes = castNotes(both);
+  const cast = !manual ? await unifyCast(both, textModel) : notes.length ? castFromAnswer(notes, answer<CastAnswer>("cast", buildCastPrompt(notes))) : { rename: new Map(), persons: [] };
+  const merged = joinShots(mergeWindows(applyCast(windows, cast), cuts), mergeWindows(applyCast(shotWindows, cast), cuts), cuts);
+  const styled = applyStyle(merged, HOUSE_STYLE);
   const lines = manual ? applyScenes(styled, answer<SceneAnswer>("scenes", buildScenePrompt(styled))) : await addScenes(styled, textModel);
   const tText = performance.now();
 
@@ -97,6 +115,8 @@ async function main() {
   const base = path.join(outDir, `${id}_preview`);
   writeTxt(rows, `${base}.txt`);
   fs.writeFileSync(path.join(workDir, "preview.json"), JSON.stringify({ media, duration: dur, persons: cast.persons, lines }, null, 1));
+  const byFile = clipRows(id, lines, cuts, dur, cast.persons);
+  writeTxt(byFile, `${base}_by_camera_file.txt`);
   let template = arg("template");
   if (template) {
     if (template.endsWith(".hwp")) {
@@ -104,8 +124,10 @@ async function main() {
       execFileSync(path.join(import.meta.dir, "../tools/hwp2hwpx/convert.sh"), [template, converted], { stdio: ["ignore", "ignore", "inherit"] });
       template = converted;
     }
-    writeHwpx(rows, template, `${base}.hwpx`);
-    execFileSync("unzip", ["-tq", `${base}.hwpx`], { stdio: ["ignore", "ignore", "inherit"] });
+    for (const [r, file] of [[rows, `${base}.hwpx`], [byFile, `${base}_by_camera_file.hwpx`]] as const) {
+      writeHwpx(r, template, file);
+      execFileSync("unzip", ["-tq", file], { stdio: ["ignore", "ignore", "inherit"] });
+    }
   }
 
   const count = (k: string) => lines.filter((l) => l.kind === k).length;
@@ -115,7 +137,9 @@ async function main() {
   console.log(`cost: ${c.usd.toFixed(2)} USD at the November 2026 list price (${c.text})`);
   if (cast.persons.length) console.log(`locals: ${cast.persons.map((p) => `${p.label} (${p.look}, ${p.turns} turns)`).join("; ")}`);
   if (failed.length) console.log(`NOTE: ${failed.length} windows got no answer and are empty in the document: ${failed.map((w) => `${Math.round(w.start)}-${Math.round(w.end)} s`).join(", ")}. Run the command again.`);
-  console.log(`written: ${base}.txt${template ? `, ${base}.hwpx` : ""}`);
+  if (shotFailed.length) console.log(`NOTE: the picture-only pass got no answer for ${shotFailed.length} windows (${shotFailed.map((w) => `${Math.round(w.start)}-${Math.round(w.end)} s`).join(", ")}); those stretches have the shot lines of the usual pass only. Run the command again.`);
+  console.log(`camera files: ${byFile.filter((r) => r.style === "clip").length}`);
+  console.log(`written: ${base}.txt, ${base}_by_camera_file.txt${template ? ", and both as .hwpx" : ""}`);
 
   const reference = arg("reference");
   if (reference) {

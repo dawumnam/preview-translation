@@ -4,7 +4,8 @@ import AdmZip from "adm-zip";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { applyStyle, HOUSE_STYLE, mergeWindows, tcShown } from "./assemble";
+import { applyStyle, HOUSE_STYLE, joinShots, mergeWindows, tcShown } from "./assemble";
+import { clipRows } from "./cliplayout";
 import { applyCast, castFromAnswer, castNotes } from "./cast";
 import { planWindows } from "./cuts";
 import { toPreviewLines, type WindowOut } from "./gen";
@@ -215,4 +216,55 @@ test("score: text that only the output has does not pull a true match apart", ()
   expect(s.korean.genSupported).toBe(2);
   expect(s.speaker.same).toBe(2);
   fs.rmSync(dir, { recursive: true });
+});
+
+test("shot lines of the picture-only pass are added where the usual pass has none", () => {
+  const base = [shot(100, "걸어오는 큐 정면"), say(104, "큐", "와 예쁘다"), say(130, "큐", "질문 하나"), foreign(133, "코"), say(137, "코", "네 맞습니다"), shot(200, "집 sk")];
+  const extra = [shot(101, "걸어오는 큐"), shot(118, "문 여는 큐"), shot(120, "집 안"), shot(134, "큐, 할 2s"), shot(160, "악수하는 큐와 할"), shot(203, "집")];
+  // 134 is at a cut, and the talk of the usual pass runs across it: the same conversation goes on.
+  const out = joinShots(base, extra, [100, 134, 200]);
+  expect(out.filter((l) => l.kind === "shot").map((l) => [l.tc, l.text])).toEqual([
+    [100, "걸어오는 큐 정면"],
+    [118, "문 여는 큐"],
+    [160, "악수하는 큐와 할"],
+    [200, "집 sk"],
+  ]);
+  expect(out.length).toBe(base.length + 2);
+});
+
+test("camera-file layout: one head line for each file, notes and turns below it", () => {
+  const lines: PreviewLine[] = [
+    { kind: "scene", text: "마을", level: 1, tc: 0 },
+    shot(0, "걸어가는 큐 후면"),
+    say(11, "큐", "와 예쁘다"),
+    shot(40, "돌아보는 큐"),
+    { kind: "scene", text: "할 인터뷰", level: 2, tc: 80 },
+    shot(80, "큐, 할 2s"),
+    foreign(85, "할"),
+    say(200, "코", "네 맞습니다"),
+  ];
+  const rows = clipRows("0101", lines, [80, 150, 150.4, 190], 240, [{ label: "할", look: "모자 쓴 할아버지", from: 80, to: 240, turns: 1 }]);
+  const body = rows.map((r) => r.text);
+  expect(body.slice(body.lastIndexOf("-".repeat(103)) + 1)).toEqual([
+    "# 마을",
+    "0000\t■ 걸어가는 큐 후면 (1:20)",
+    "0011\t큐\t와 예쁘다",
+    "0040\t· 돌아보는 큐",
+    "# - 할 인터뷰",
+    "0120\t■ 큐, 할 2s (1:10)",
+    "0125\t할\t@@(조)",
+    // Two files with no line of their own: the picture went on. The 0.4 s piece between two cuts is no file.
+    "0230\t■ 이어서 (0:40)",
+    "0310\t■ 이어서 (0:50)",
+    "0320\t코\t네 맞습니다",
+    "0400\t영상종료",
+  ]);
+  expect(body).toContain("할\t모자 쓴 할아버지 (0120~)");
+  expect(rows.filter((r) => r.style === "clip").length).toBe(4);
+});
+
+test("scene lines have two levels; the document starts with a place", () => {
+  const lines = [shot(0, "a"), say(5, "큐", "b"), shot(200, "c"), say(205, "큐", "d")];
+  const out = applyScenes(lines, { scenes: [{ first_line: 1, level: 2, title: "마을 sk" }, { first_line: 3, level: 2, title: "검남 인터뷰" }] });
+  expect(out.filter((l) => l.kind === "scene").map((l) => renderLine(l))).toEqual(["# 마을 sk", "# - 검남 인터뷰"]);
 });

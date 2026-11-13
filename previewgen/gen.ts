@@ -24,6 +24,8 @@ export interface Person {
 }
 
 export interface WindowOut extends PlannedWindow {
+  /** "shots" for a window of the picture-only pass. Not set for the usual pass. */
+  pass?: "shots";
   latencyMs: number;
   error?: string;
   people: Person[];
@@ -148,7 +150,7 @@ export async function watch(media: string, workDir: string, s: GenSettings, from
         attempts: 3,
         label: `window ${p.start}-${p.end}`,
       });
-      const w: WindowOut = { ...p, latencyMs: Math.round(r.latencyMs), people: [], lines: [] };
+      const w: WindowOut = { ...p, ...(s.only === "shots" ? { pass: "shots" as const } : {}), latencyMs: Math.round(r.latencyMs), people: [], lines: [] };
       if (r.value) {
         w.people = (r.value.people ?? []).map((x) => ({ label: (x.label ?? "").trim(), look: x.look ?? "", role: x.role ?? "" }));
         w.lines = toPreviewLines(r.value, p.start, p.end);

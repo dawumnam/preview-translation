@@ -19,6 +19,8 @@ export interface PreviewLine {
   lang?: string;
   /** Generated lines only: part of the programme, a request of the crew, or talk off the record. */
   use?: "take" | "ask" | "direct";
+  /** Generated scene lines only: 1 = a new place, 2 = a new activity at the same place. */
+  level?: 1 | 2;
 }
 
 export interface GtLine extends PreviewLine {
@@ -132,7 +134,7 @@ export function tcText(sec: number): string {
 export function renderLine(l: PreviewLine, showTc = true): string {
   const at = l.tcDoc ?? l.tc;
   const tc = showTc && at !== undefined ? tcText(at) : "";
-  if (l.kind === "scene") return `# ${l.text}`;
+  if (l.kind === "scene") return l.level === 2 ? `# - ${l.text}` : `# ${l.text}`;
   if (l.kind === "note") return l.text;
   if (l.kind === "shot") return `${tc}\t${l.text}`;
   if (l.kind === "foreign") return `${tc}\t${l.speaker}\t@@(${l.lang || "조"})`;

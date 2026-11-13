@@ -16,7 +16,7 @@
 //      (the work directory of a finished run: preview.json and windows.json)
 import fs from "fs";
 import path from "path";
-import { tcText, type PreviewLine } from "./gt";
+import { renderLine, tcText, type PreviewLine } from "./gt";
 import { writeHwpx, writeTxt, type Row } from "./write";
 
 const RULE = "-".repeat(103);
@@ -43,7 +43,7 @@ export function clipRows(title: string, lines: PreviewLine[], cuts: number[], du
     for (const p of persons) rows.push({ text: `${p.label}\t${p.look} (${tcText(p.from)}~)`, style: "body" });
     rows.push({ text: RULE, style: "rule" });
   }
-  for (const l of lines) if (l.kind === "scene") rows.push({ text: `# ${l.text}`, style: "scene" });
+  for (const l of lines) if (l.kind === "scene") rows.push({ text: renderLine(l), style: "scene" });
   rows.push({ text: RULE, style: "rule" });
 
   // Camera files: from one cut to the next. A file of under one second is a glitch of the join.
@@ -58,9 +58,9 @@ export function clipRows(title: string, lines: PreviewLine[], cuts: number[], du
   for (const l of lines) {
     if (l.kind === "scene") {
       // The scene line stands before the head line of the file that it starts with.
-      if (!firstScene) rows.push({ text: "", style: "body" });
+      if (!firstScene && l.level !== 2) rows.push({ text: "", style: "body" });
       firstScene = false;
-      rows.push({ text: `# ${l.text}`, style: "scene" });
+      rows.push({ text: renderLine(l), style: "scene" });
       continue;
     }
     const t = l.tc ?? 0;
