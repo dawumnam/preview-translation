@@ -139,6 +139,12 @@ The human preview is one flat list. A shot line can be a fact (a new camera file
 
 It needs no model call: it reads `preview.json` and the cut list of a finished run. 1023 has 56 camera files; the model has its own description for 54.
 
+`bun previewgen/checklayout.ts <work-dir> <id>_preview_by_camera_file.txt` checks the frame of that document with no model call. For 1022: 115 recordings found by the code, 115 head lines, each at the start second of its recording; the blocks cover 6,611.1 s of 6,611.1 s; each length shown is right to 0.5 s; 108 head lines have their own description and 7 say 이어서; 3 recordings are 2 s or shorter.
+
+What this check does not cover: the words of a line, the notes inside a recording, and the spoken turns are model output (measured against the human preview, see the tables above). A cut that the detector does not find joins two recordings in one block; no footage is lost from the document, only the border. Of the cuts that the detector found in the nine episodes, 93% have a TC line of the human writer in the 12 s after them, so it seldom finds a cut where there is none. How many it misses is not known; a clip list from the edit system (EDL or XML) would give the exact borders.
+
+Example (1022, 16:05 to 21:20): the code finds 9 recordings. The human preview has a shot line for 6 of them and no line for 3 (two false starts of 14 s and 13 s at 16:22 and 16:36, and 19 s of crew talk at 18:18). In the flat list a reader cannot see that they are there.
+
 ## Relation to the translator
 
 `preview.json` has the exact start time of each `@@` line. The translator (`src/`) finds the speech of a marker between the TCs that a human typed; with a generated preview it can take the time of the line itself.
@@ -157,6 +163,7 @@ It needs no model call: it reads `preview.json` and the cut list of a finished r
 | `scenes.ts` | Scene headers |
 | `write.ts` | Text and HWPX output |
 | `cliplayout.ts` | CLI: the layout with the camera file as the unit |
+| `checklayout.ts` | CLI: check the frame of that layout against the cut list (no model call) |
 | `gt.ts` | Reads a human preview (`.hwpx`) as lines |
 | `score.ts` | CLI: compare an output with a human preview (`--list` shows each difference) |
 | `show.ts` | CLI: print an output next to the human preview |

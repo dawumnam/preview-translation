@@ -29,7 +29,11 @@ export interface Person {
   turns: number;
 }
 
-const mss = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec) % 60).padStart(2, "0")}`;
+/** A length as m:ss. The seconds are rounded first, so that 59.6 s is 1:00 and not 0:00. */
+export const mss = (sec: number) => {
+  const s = Math.round(sec);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
 
 /** The rows of the document in the camera-file layout. `lines` are the finished lines, scene lines included. */
 export function clipRows(title: string, lines: PreviewLine[], cuts: number[], durationSec: number, persons: Person[] = []): Row[] {
