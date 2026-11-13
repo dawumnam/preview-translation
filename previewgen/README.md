@@ -205,3 +205,4 @@ Open: a bar for the notes inside a take. Agreement of 95% with one writer's free
 | `score.ts` | CLI: compare an output with a human preview (`--list` shows each difference) |
 | `show.ts` | CLI: print an output next to the human preview |
 | `previewgen.test.ts` | `bun test previewgen` |
+| `study/` | The scripts behind the numbers in this file (`tcstudy.ts`, `tchazard.ts`, `silence_study.ts`, `shotstudy.ts`, `rhythm_eval.ts`, `editor_eval.ts`, `coverage.ts`, `scenes_eval.ts` and others; `py/` has the frame, speech-activity and figure scripts). They read data under `exp/previewgen/` that is not in git: `media/<id>.mp4`, `gt/<id>.hwpx` (the human previews), `scores/<id>.txt` (ffmpeg scene score of each frame), `vad/<id>.json`, and the work directories of finished runs. |
