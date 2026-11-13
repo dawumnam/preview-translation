@@ -43,6 +43,8 @@ export interface GenSettings {
   cast: string;
   /** Free text that makes two runs with the same settings different files. */
   tag: string;
+  /** "shots": the model gets the picture with no sound and writes shot entries only. */
+  only?: "shots";
 }
 
 export const DEFAULT_SETTINGS: GenSettings = { model: "gemini-4-argon", thinking: "LOW", fps: 1, res: "LOW", window: 300, about: "", cast: "", tag: "" };
@@ -126,13 +128,14 @@ export async function watch(media: string, workDir: string, s: GenSettings, from
     plan.map(async (p): Promise<WindowOut> => {
       const old = done.get(`${p.start}-${p.end}`);
       if (old) return old;
-      const clip = await makeClip(media, p.start, p.end, path.join(workDir, "clips"), { fps: Math.max(2, Math.ceil(s.fps) * 2), mode: "av", height: 270 });
+      const clip = await makeClip(media, p.start, p.end, path.join(workDir, "clips"), { fps: Math.max(2, Math.ceil(s.fps) * 2), mode: s.only === "shots" ? "video" : "av", height: 270 });
       const prompt = buildLogPrompt({
         durationSec: p.end - p.start,
         cuts: p.cuts.map((c) => c - p.start),
         startsAtCut: p.startsAtCut,
         about: s.about || undefined,
         cast: s.cast || undefined,
+        shotsOnly: s.only === "shots",
       });
       const r = await callJson<RawWindow>({
         model: s.model,
@@ -180,6 +183,7 @@ async function main() {
     about: arg("about", "")!,
     cast: arg("cast", "")!,
     tag: arg("tag", "")!,
+    ...(arg("only") === "shots" ? { only: "shots" as const } : {}),
   };
   let have: WindowOut[] = [];
   if (fs.existsSync(outPath)) {

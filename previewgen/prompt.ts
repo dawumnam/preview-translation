@@ -68,6 +68,8 @@ export interface PromptOptions {
   cast?: string;
   /** Place and subject of the shoot, when known. */
   about?: string;
+  /** The clip has no sound: only shot entries are asked for. */
+  shotsOnly?: boolean;
 }
 
 const mmss = (sec: number) => {
@@ -107,10 +109,28 @@ const EXAMPLE = `[00:00] shot: 걸어가는 큐 후면
 [04:26] shot: 커피 마시는 큐 bs
 [04:28] 큐 (ko, take): 따뜻한 커피를 마시니까 밖에 추위가 한 번에 사라지네요`;
 
+const SPEECH_RULES = `## Speech entries (kind "speech")
+One entry for each turn: one person who speaks, until another person speaks or there is a clear pause. \`t\` is where the turn starts. \`speaker\` is the label. Write every turn that you hear, the talk between takes included.
+
+\`use\` says what kind of talk it is:
+- "take": speech that is part of the programme. The host's lines to the camera (each take of them), the questions and answers of an interview, the coordinator's interpreting in both directions, greetings, and what people say while they do something on camera.
+- "ask": a crew member (피 or 카감) talks about the content: what the host or the coordinator must ask the local, what the local must explain or show, what the host must say about the subject, or a question of the crew to the local. Examples: 이 빵 이름이 뭔지 한 번만 물어봐주세요 / 여기서 몇 년 사셨는지, 그리고 가족 얘기가 나와야 합니다 / 겨울에는 주로 뭐 하고 지내시는 거예요? / 방금 먹어본 맛이 어떤지 한마디 해주세요 / 그러면 지금도 직접 만드시는 건지. When the coordinator passes such a request on to the local, and the local answers, those turns are "take".
+- "direct": talk about how to shoot or how to perform, and all other talk off the record. Examples: 다시 한번 갈게요 / 처음부터요? / 조금 더 자연스럽게 / 천천히 걸어오세요 / 저쪽 보고 말씀해주세요 / 잠깐만요 배터리 좀 / 컷. Also the host's answers and questions about such directions (네 알겠습니다, 다시 할게요), talk about the plan or the gear, small talk, and the coordinator's explanation of a direction to a local.
+When a crew member does both in one turn, split it: the part about the content is "ask", the part about the shooting is "direct".
+
+\`lang\` and \`text\`:
+- Korean ("ko"): \`text\` is what the person says, word for word, in Korean spelling as spoken. Do not tidy it, do not summarise, do not add sentence-final periods. Write ? in place of a word that you cannot make out. Never invent words. When one person speaks for a long time (the host's lines to the camera, the coordinator's interpreting), start a new entry at a pause between sentences, about every 15 to 30 seconds, each with its own time.
+- Foreign language ("ka", "en", "ru", "other"): leave \`text\` empty. The log only marks that the turn is there; a translator fills it later. Each turn gets its own entry: when 코 passes a question on to a local and the local answers, that is two entries. When one person goes on in a foreign language for a long time, start a new entry at each clear pause, about every 20 to 40 seconds. A short word of agreement inside another person's turn is not a turn. The host's greetings or thanks in the local language are foreign-language turns of 큐.
+- A turn that mixes both: if it is mostly Korean, write the Korean and leave the foreign words out.
+- No entry for laughter, breath, animal sounds, music or noise.
+
+`;
+
 export function buildLogPrompt(o: PromptOptions): string {
   const dur = Math.round(o.durationSec);
   const cuts = (o.cuts ?? []).filter((c) => c > 1 && c < dur - 1);
-  return `You are a 프리뷰어 (footage logger) for a Korean TV travel documentary. The clip is ${dur} seconds of raw footage with sound. Write the 프리뷰 노트 (preview log) for it: one entry for each shot and one entry for each spoken turn, in time order. Editors use the log to find footage without watching it. It must be complete, and the times must be right.
+  const speech = !o.shotsOnly;
+  return `You are a 프리뷰어 (footage logger) for a Korean TV travel documentary. The clip is ${dur} seconds of raw footage ${speech ? "with sound" : "with no sound"}. Write the 프리뷰 노트 (preview log) for it: ${speech ? "one entry for each shot and one entry for each spoken turn" : "one entry for each shot (the spoken turns are logged in another step)"}, in time order. Editors use the log to find footage without watching it. It must be complete, and the times must be right.
 ${o.about ? `\n## About this shoot\n${o.about}\n` : ""}
 ## The footage
 Raw camera files joined end to end, not edited: several takes of the same action one after the other, scenery shots, interviews, and talk between takes.
@@ -127,10 +147,15 @@ ${o.startsAtCut === false ? "This clip starts in the middle of a take.\n" : ""}$
 - Locals. They speak Georgian (ka), sometimes Russian (ru) or English (en). Give each local a short Korean label by look. An old man is 할, an old woman is 할머, a child is 아이. For other people: one syllable for the colour of the clothes (검, 흰, 파, 초, 빨, 갈, 회, 베) or for a clear feature (두 = 두건, 모 = 모자, 안 = 안경, 수 = 수염), then 남 or 여: 검남, 흰여, 두여, 모남, 안여, 수남. Use one label for one person through the whole clip, also when the camera shows the person from another side.${o.cast ? `\n\nPeople already named in this episode. When one of them is in the clip, use that label:\n${o.cast}` : ""}
 
 ## Shot entries (kind "shot", use "none")
-Write a shot entry:
-- at a jump to a new camera file${cuts.length ? " (the times above)" : ""}. Each take gets its own entry, also when it shows the same action as the take before. \`t\` is the time of the jump. The one exception: a new camera file that only goes on with the same people, the same talk and the same place as the file before it gets no shot entry (the next speech entry carries the time);
-- inside a long take, when the camera comes to a new place or a new subject (a travelling shot goes from the road to the gate, then to the yard, then into the room: one entry for each), or when the people start a new action (they go in, come out, sit down to eat, say goodbye).
-Do not write a shot entry when only the framing changes (the camera zooms, or turns from one speaker to the other). During an interview or a conversation in one place, one entry at its start is enough.${o.startsAtCut === false ? " Do not write a shot entry at 00:00: the take was already running." : ""}
+Write a shot entry in each of these cases:
+1. A jump to a new camera file${cuts.length ? " (the times above)" : ""}. \`t\` is the time of the jump. Each take gets its own entry, also when it shows the same action as the take before. The one exception: a new camera file that only goes on with the same people, the same talk and the same place as the file before it gets no shot entry (the next speech entry carries the time).
+2. Inside a camera file, each time one of these happens. \`t\` is the moment it starts:
+   - A new take starts with no jump of the picture: the host goes back to his place and does the same action or says the same lines again.
+   - The people start a new action: they meet, shake hands, hug, go in, come out, sit down, start to eat or drink, take something in their hands, say goodbye, walk off. Write this entry also when they talk at the same time.
+   - The camera comes to a new subject or a new place: it turns from the house to the hills; a travelling shot comes from the street to a door, then up the stairs, then onto the roof (one entry for each). In a work process (cooking, building, harvest) each new step is an entry: 감자 써는 손, then 냄비에 넣는, then 젓는.
+   - A hand or a slate covers the lens: 슬레이트. Write it also when it is there for one second only.
+3. A long shot with no talk in which the picture stays of one kind (the view from a moving car, people far away in a wide shot): a new entry about every 30 seconds, with the same words.
+Do not write a shot entry when only the framing changes while people ${speech ? "talk" : "stand or sit and talk"} in one place (the camera zooms, or turns from one speaker to the other).${o.startsAtCut === false ? " Do not write a shot entry at 00:00: the take was already running." : ""}
 
 \`text\` is a short Korean phrase that ends in a noun, 3 to 15 characters: who or what is in the picture and what they do. This is the house style:
 - 걸어가는 큐 후면 / 걸어오는 큐 정면 / 걸어가는 큐 측면 (the host walks away from, towards or past the camera)
@@ -144,25 +169,10 @@ Do not write a shot entry when only the framing changes (the camera zooms, or tu
 - Put ? after a word when you are not sure what the thing is: 창고? 로 들어가는 tr
 Use plain words for what is seen (집, 마당, 빵). Do not use local names that you only know from the talk. Do not write sentences, and do not write what people say here.
 
-## Speech entries (kind "speech")
-One entry for each turn: one person who speaks, until another person speaks or there is a clear pause. \`t\` is where the turn starts. \`speaker\` is the label. Write every turn that you hear, the talk between takes included.
-
-\`use\` says what kind of talk it is:
-- "take": speech that is part of the programme. The host's lines to the camera (each take of them), the questions and answers of an interview, the coordinator's interpreting in both directions, greetings, and what people say while they do something on camera.
-- "ask": a crew member (피 or 카감) talks about the content: what the host or the coordinator must ask the local, what the local must explain or show, what the host must say about the subject, or a question of the crew to the local. Examples: 이 빵 이름이 뭔지 한 번만 물어봐주세요 / 여기서 몇 년 사셨는지, 그리고 가족 얘기가 나와야 합니다 / 겨울에는 주로 뭐 하고 지내시는 거예요? / 방금 먹어본 맛이 어떤지 한마디 해주세요 / 그러면 지금도 직접 만드시는 건지. When the coordinator passes such a request on to the local, and the local answers, those turns are "take".
-- "direct": talk about how to shoot or how to perform, and all other talk off the record. Examples: 다시 한번 갈게요 / 처음부터요? / 조금 더 자연스럽게 / 천천히 걸어오세요 / 저쪽 보고 말씀해주세요 / 잠깐만요 배터리 좀 / 컷. Also the host's answers and questions about such directions (네 알겠습니다, 다시 할게요), talk about the plan or the gear, small talk, and the coordinator's explanation of a direction to a local.
-When a crew member does both in one turn, split it: the part about the content is "ask", the part about the shooting is "direct".
-
-\`lang\` and \`text\`:
-- Korean ("ko"): \`text\` is what the person says, word for word, in Korean spelling as spoken. Do not tidy it, do not summarise, do not add sentence-final periods. Write ? in place of a word that you cannot make out. Never invent words. When one person speaks for a long time (the host's lines to the camera, the coordinator's interpreting), start a new entry at a pause between sentences, about every 15 to 30 seconds, each with its own time.
-- Foreign language ("ka", "en", "ru", "other"): leave \`text\` empty. The log only marks that the turn is there; a translator fills it later. Each turn gets its own entry: when 코 passes a question on to a local and the local answers, that is two entries. When one person goes on in a foreign language for a long time, start a new entry at each clear pause, about every 20 to 40 seconds. A short word of agreement inside another person's turn is not a turn. The host's greetings or thanks in the local language are foreign-language turns of 큐.
-- A turn that mixes both: if it is mostly Korean, write the Korean and leave the foreign words out.
-- No entry for laughter, breath, animal sounds, music or noise.
-
-## Example
-A stretch of a log in a short notation (\`[time] shot: text\` and \`[time] speaker (lang, use): text\`):
-${EXAMPLE}
+${speech ? SPEECH_RULES : ""}## Example
+A stretch of a log in a short notation (${speech ? "`[time] shot: text` and `[time] speaker (lang, use): text`" : "`[time] shot: text`"}):
+${speech ? EXAMPLE : EXAMPLE.split("\n").filter((l) => l.includes("] shot: ")).join("\n")}
 
 ## Output
-Return \`people\` (each local in the clip: label, look, role) and \`lines\` (all entries in time order). \`t\` is MM:SS from the start of this clip, between 00:00 and ${mmss(dur)}.`;
+Return \`people\` (each local in the clip: label, look, role) and \`lines\` (${speech ? "all entries" : "the shot entries"} in time order). \`t\` is MM:SS from the start of this clip, between 00:00 and ${mmss(dur)}.`;
 }

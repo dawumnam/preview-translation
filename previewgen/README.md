@@ -80,6 +80,47 @@ Not measured, because the spending cap of the Google project was reached on 13 N
 - A second episode, above all one with many locals in one scene (1024, 1028).
 - `gemini-3.8-flash` for the watch step (about a third of the price), the Batch API (half the price), medium media resolution, windows of 2 or 10 minutes, and the agreement between two runs of the same episode.
 
+## Second round: shot lines, TCs, scenes (13 November 2026)
+
+The aim was 95% agreement with the human preview for shot lines with TC and for scene titles. Free checks on all 9 Georgia episodes (24.4 hours, 2,702 human shot lines, 104 human scenes), then model runs on stretches of 1023, 1104 and 1105 (35 minutes, 94 human shot lines).
+
+What the human previews are made of:
+
+| Fact | Number |
+|---|---|
+| Human shot lines that stand at a camera cut (a jump of the picture that code finds) | 47%. The other 53% are notes inside a running take: a new take, a new action, a new subject. A detector for picture changes of all kinds does not find these better than chance. |
+| Camera cuts that the human gives a shot line | 89% (a TC line of any kind: 93%) |
+| TC of a shot line after its cut | median 1.4 s; by episode 0.0 s to 3.6 s; up to 12 s |
+| Speech lines with a TC of their own | 25% to 48% by episode |
+| `디렉` lines in one episode | 0 (two episodes) to 55 |
+| Length of a scene | 1.0 to 51.2 minutes; 6 to 19 scenes in one episode |
+
+What was measured:
+
+| Question | Result |
+|---|---|
+| Human shot lines found, by kind (1023, prompt 3) | at a cut 96 to 100%; inside a take 50 to 66% |
+| Do two runs of the model agree with each other? | Shot lines at a cut: 98 to 100%. Shot lines inside a take: 58 to 87%. So the notes inside a take are not repeatable, also for the same writer. |
+| Does a union of three runs of the same kind help? | No: 83% against 82% for the best run. The runs miss the same lines. |
+| New shot rules in the prompt (new take, new action also during talk, each step of a work process, slate, a line every 30 s in a long shot of one kind) | Human shot lines found on the stretches: 71% → 78%; inside a take 49% → 59% |
+| A second pass with the picture only (no sound, shot entries only) | `gemini-3.8-flash` alone: 87% found with 142 lines against 94; `gemini-4-argon` alone: 83% with 110 lines. It costs about 0.2 USD for an hour of video with Flash. |
+| The usual pass and the two picture-only passes joined | 89 of the 94 human shot lines have a generated shot line within -10/+5 s (95%), with about 140 lines against 94. Lines that two of the three passes have: 88% with 110 lines. This is not in `run.ts` yet. |
+| TC of a shot line at a cut: the cut, or a little after it? | The document now shows cut + 2 s (`CUT_LAG`): within 3 s of the writer's TC for 88% of such lines, against 76% with the cut itself. |
+| TCs of any kind of line | The output shows a TC within 10 s of 96% of the human TCs, and within 5 s of 79 to 89%. |
+| Scene starts, tested on the human previews (the "#" lines taken out, then asked for) | Base prompt: 66 of 104 human scene starts found within 30 s (63%), 115 scenes made. With two other episodes as examples: 71 found (68%), 137 made. The model starts scenes at the same moments as the writer, but it divides long visits that the writer left as one scene. |
+
+## A layout with the camera file as the unit (`cliplayout.ts`)
+
+The human preview is one flat list. A shot line can be a fact (a new camera file starts) or a note of the writer (something new inside the take), and the two look the same. Agreement on the facts is 96 to 100%; agreement on the notes is 50 to 66%, and no better between two runs of one model. A target of 95% for the list as a whole measures the notes.
+
+`bun previewgen/cliplayout.ts <work-dir> --template <preview>.hwpx` writes the same content in another frame:
+
+- one head line for each camera file, with its exact start and its length: `0444<tab>■ 걸어가는 큐 후면 (1:15)`;
+- below it the notes inside the file (`· text`) and the spoken turns, each with its own TC;
+- at the top, the locals of the day with their look, so each label has a meaning.
+
+It needs no model call: it reads `preview.json` and the cut list of a finished run. 1023 has 56 camera files; the model has its own description for 54.
+
 ## Relation to the translator
 
 `preview.json` has the exact start time of each `@@` line. The translator (`src/`) finds the speech of a marker between the TCs that a human typed; with a generated preview it can take the time of the line itself.
@@ -97,6 +138,7 @@ Not measured, because the spending cap of the Google project was reached on 13 N
 | `cast.ts` | One label for one person |
 | `scenes.ts` | Scene headers |
 | `write.ts` | Text and HWPX output |
+| `cliplayout.ts` | CLI: the layout with the camera file as the unit |
 | `gt.ts` | Reads a human preview (`.hwpx`) as lines |
 | `score.ts` | CLI: compare an output with a human preview (`--list` shows each difference) |
 | `show.ts` | CLI: print an output next to the human preview |

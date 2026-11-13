@@ -20,7 +20,7 @@
 // - Times: how far the generated time is from the TC that the writer typed.
 import fs from "fs";
 import { loadGt, renderLine, type GtLine, type PreviewLine } from "./gt";
-import { applyStyle, HOUSE_STYLE, mergeWindows, type StyleOptions } from "./assemble";
+import { applyStyle, HOUSE_STYLE, mergeWindows, tcShown, type StyleOptions } from "./assemble";
 import type { GenFile } from "./gen";
 
 const CORE = new Set(["큐", "코", "피", "카감"]);
@@ -190,6 +190,13 @@ function bigramDice(a: string, b: string): number {
 const median = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : NaN);
 const pct = (x: number) => (Number.isFinite(x) ? `${(100 * x).toFixed(0)}%` : "-");
 
+/**
+ * A generated shot line is at the place of a human shot line when it stands
+ * at most this many seconds before / after it. The writer's TC comes after
+ * the start of the shot, so the window is wider to the front.
+ */
+export const SHOT_WINDOW: [number, number] = [10, 5];
+
 export interface Score {
   range: [number, number][];
   korean: { refChars: number; genChars: number; matched: number; recall: number; precision: number; refLines: number; refFound: number; genLines: number; genSupported: number };
@@ -197,13 +204,18 @@ export interface Score {
   foreign: { ref: number; gen: number; matched: number; matchedSpeaker: number };
   direction: { ref: number; gen: number; matched: number };
   shot: { ref: number; gen: number; matched: number; dice: number; medianOffset: number };
+  /** Human shot lines apart: those that stand at a camera cut, and those inside a take. */
+  shotAt: { cutRef: number; cutFound: number; insideRef: number; insideFound: number };
   time: { lines: number; medianAbs: number; within3: number; within5: number };
+  /** Human lines with a TC (any kind) that have a generated line with a shown TC within 5 s / 10 s. */
+  tc: { ref: number; within5: number; within10: number; gen: number; genNearRef5: number };
 }
 
-export function score(gen: PreviewLine[], gtAll: GtLine[], ranges: [number, number][], list = false): Score {
+export function score(gen: PreviewLine[], gtAll: GtLine[], ranges: [number, number][], list = false, cuts: number[] = []): Score {
   const inRange = (t: number) => ranges.some(([a, b]) => t >= a && t < b);
   const gt = gtAll.filter((l) => inRange(l.tcPrev));
-  const g = gen.filter((l) => inRange(l.tc!)).sort((a, b) => a.tc! - b.tc!);
+  // The times that the document shows are compared (see CUT_LAG in assemble.ts).
+  const g = gen.filter((l) => inRange(l.tc!)).map((l) => (l.tcDoc !== undefined ? { ...l, tc: l.tcDoc } : l)).sort((a, b) => a.tc! - b.tc!);
 
   // --- Korean text ---
   const refSpeech = gt.filter((l) => l.kind === "speech" && !isDirection(l) && normText(l.text).length > 0);
@@ -357,11 +369,30 @@ export function score(gen: PreviewLine[], gtAll: GtLine[], ranges: [number, numb
   const refShot = gt.filter((l) => l.kind === "shot" && l.tc !== undefined && l.text !== "영상종료");
   const genShot = g.filter((l) => l.kind === "shot");
   // The writer's TC comes up to about 8 s after the cut; the model's time is at the cut.
-  const near = (r: PreviewLine, x: PreviewLine) => x.tc! >= r.tc! - 10 && x.tc! <= r.tc! + 5;
+  const near = (r: PreviewLine, x: PreviewLine) => x.tc! >= r.tc! - SHOT_WINDOW[0] && x.tc! <= r.tc! + SHOT_WINDOW[1];
   // Most pairs first; among equal counts, the pair with the more alike text and the nearer time.
   const shotPairs = matchWeighted(refShot, genShot, (r, x) => (near(r, x) ? 1 + 0.3 * bigramDice(r.text, x.text) - 0.01 * Math.abs(x.tc! - r.tc! + 3) : 0));
   const dice = shotPairs.map(([i, j]) => bigramDice(refShot[i].text, genShot[j].text));
   const offs = shotPairs.map(([i, j]) => genShot[j].tc! - refShot[i].tc!);
+  // The writer's TC comes up to 12 s after the cut that starts the shot.
+  const shotAt = { cutRef: 0, cutFound: 0, insideRef: 0, insideFound: 0 };
+  const foundShot = new Set(shotPairs.map(([i]) => i));
+  refShot.forEach((r, i) => {
+    const atCut = cuts.some((c) => c >= r.tc! - 12 && c <= r.tc! + 2);
+    if (atCut) {
+      shotAt.cutRef++;
+      if (foundShot.has(i)) shotAt.cutFound++;
+    } else {
+      shotAt.insideRef++;
+      if (foundShot.has(i)) shotAt.insideFound++;
+    }
+  });
+
+  // --- TC lines of any kind: is there a TC in the output where the writer put one? ---
+  const shown = tcShown(g);
+  const myTcs = g.filter((_, i) => shown[i]).map((l) => Math.floor(l.tc!));
+  const refTcs = gt.filter((l) => l.tc !== undefined && l.kind !== "scene" && l.text !== "영상종료").map((l) => l.tc!);
+  const nearAny = (t: number, xs: number[], tol: number) => xs.some((x) => Math.abs(x - t) <= tol);
 
   if (list) {
     console.log("\n--- reference Korean lines not found in the output ---");
@@ -397,6 +428,14 @@ export function score(gen: PreviewLine[], gtAll: GtLine[], ranges: [number, numb
     foreign: { ...stat.F, matchedSpeaker: fSpeaker },
     direction: stat.D,
     shot: { ref: refShot.length, gen: genShot.length, matched: shotPairs.length, dice: dice.length ? dice.reduce((x, y) => x + y, 0) / dice.length : NaN, medianOffset: median(offs) },
+    shotAt,
+    tc: {
+      ref: refTcs.length,
+      within5: refTcs.filter((t) => nearAny(t, myTcs, 5)).length,
+      within10: refTcs.filter((t) => nearAny(t, myTcs, 10)).length,
+      gen: myTcs.length,
+      genNearRef5: myTcs.filter((t) => nearAny(t, refTcs, 5)).length,
+    },
     time: {
       lines: dts.length,
       medianAbs: median(dts.map(Math.abs)),
@@ -428,7 +467,9 @@ export function formatScore(s: Score): string {
     `Foreign turns reference ${f.ref}, generated ${f.gen}, matched ${f.matched} (recall ${pct(f.matched / Math.max(1, f.ref))}, precision ${pct(f.matched / Math.max(1, f.gen))}), same speaker ${f.matchedSpeaker} (${pct(f.matchedSpeaker / Math.max(1, f.matched))})`,
     `디렉 lines     reference ${d.ref}, generated ${d.gen}, matched ${d.matched}`,
     `Shot lines    reference ${sh.ref}, generated ${sh.gen}, matched ${sh.matched} (recall ${pct(sh.matched / Math.max(1, sh.ref))}, precision ${pct(sh.matched / Math.max(1, sh.gen))}), text likeness ${sh.dice.toFixed(2)}, median offset ${sh.medianOffset.toFixed(1)} s`,
+    `  of these    at a camera cut ${s.shotAt.cutFound}/${s.shotAt.cutRef} (${pct(s.shotAt.cutFound / Math.max(1, s.shotAt.cutRef))}), inside a take ${s.shotAt.insideFound}/${s.shotAt.insideRef} (${pct(s.shotAt.insideFound / Math.max(1, s.shotAt.insideRef))})`,
     `Times         ${s.time.lines} Korean lines with a TC: median ${s.time.medianAbs.toFixed(1)} s off, ${pct(s.time.within3)} within 3 s, ${pct(s.time.within5)} within 5 s`,
+    `TC lines      the writer's ${s.tc.ref} TCs (any kind of line): a shown TC of the output within 5 s for ${s.tc.within5} (${pct(s.tc.within5 / Math.max(1, s.tc.ref))}), within 10 s for ${s.tc.within10} (${pct(s.tc.within10 / Math.max(1, s.tc.ref))}); the output shows ${s.tc.gen} TCs, ${pct(s.tc.genNearRef5 / Math.max(1, s.tc.gen))} of them within 5 s of a TC of the writer`,
   ].join("\n");
 }
 
@@ -446,6 +487,7 @@ if (import.meta.main) {
   if (opt("direct-foreign")) style.directForeign = opt("direct-foreign") as StyleOptions["directForeign"];
   if (opt("foreign-gap")) style.foreignGap = parseFloat(opt("foreign-gap")!);
   if (opt("direct-min")) style.directMin = parseFloat(opt("direct-min")!);
+  if (opt("shot-window")) [SHOT_WINDOW[0], SHOT_WINDOW[1]] = opt("shot-window")!.split(",").map(parseFloat);
   const lines = applyStyle(mergeWindows(gen.windows, gen.cuts ?? []), style);
   // --ranges 820-1120,2850-3150 : score only these stretches.
   const ri = process.argv.indexOf("--ranges");
@@ -453,7 +495,7 @@ if (import.meta.main) {
     ri >= 0
       ? process.argv[ri + 1].split(",").map((r) => r.split("-").map(parseFloat) as [number, number])
       : gen.windows.filter((w) => !w.error).map((w) => [w.start, w.end] as [number, number]);
-  const s = score(lines, loadGt(gtPath), ranges, process.argv.includes("--list"));
+  const s = score(lines, loadGt(gtPath), ranges, process.argv.includes("--list"), gen.cuts ?? []);
   console.log(formatScore(s));
   const j = process.argv.indexOf("--json");
   if (j >= 0) fs.writeFileSync(process.argv[j + 1], JSON.stringify(s, null, 1));

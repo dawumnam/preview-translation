@@ -9,6 +9,8 @@ export type Kind = "scene" | "shot" | "speech" | "foreign" | "note";
 export interface PreviewLine {
   /** Seconds from the start of the video. Not set when the line has no TC. */
   tc?: number;
+  /** Generated shot lines at a camera cut: the TC that the document shows (a little after the cut, as the human writers do). */
+  tcDoc?: number;
   kind: Kind;
   speaker?: string;
   /** Korean text, shot description, scene title or note. Empty for a foreign-language turn. */
@@ -128,7 +130,8 @@ export function tcText(sec: number): string {
 
 /** One line as the preview documents write it (tab-separated). */
 export function renderLine(l: PreviewLine, showTc = true): string {
-  const tc = showTc && l.tc !== undefined ? tcText(l.tc) : "";
+  const at = l.tcDoc ?? l.tc;
+  const tc = showTc && at !== undefined ? tcText(at) : "";
   if (l.kind === "scene") return `# ${l.text}`;
   if (l.kind === "note") return l.text;
   if (l.kind === "shot") return `${tc}\t${l.text}`;

@@ -120,7 +120,7 @@ async function main() {
   const reference = arg("reference");
   if (reference) {
     const gt = loadGt(reference);
-    const s = score(lines.filter((l) => l.kind !== "scene"), gt, [[0, dur + 1]]);
+    const s = score(lines.filter((l) => l.kind !== "scene"), gt, [[0, dur + 1]], false, cuts);
     const sc = scoreScenes(lines, gt);
     console.log(`\nagainst ${reference}:\n${formatScore(s)}`);
     console.log(`Scenes        reference ${sc.ref}, generated ${sc.gen}, start within 30 s of a reference scene ${sc.matched}`);

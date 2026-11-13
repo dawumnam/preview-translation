@@ -11,7 +11,8 @@ import { renderLine, tcText, type PreviewLine } from "./gt";
 
 export interface Row {
   text: string;
-  style: "rule" | "title" | "scene" | "body";
+  /** "clip": the head line of a camera file (see cliplayout.ts): a body paragraph in the bold letters of the scene lines. */
+  style: "rule" | "title" | "scene" | "body" | "clip";
 }
 
 const RULE = "-".repeat(103);
@@ -83,6 +84,7 @@ export function writeHwpx(rows: Row[], templatePath: string, outPath: string) {
     rule: proto(rulePara ?? bodyPara),
     scene: proto(scenePara),
     body: proto(bodyPara),
+    clip: { open: proto(bodyPara).open, charPr: proto(scenePara).charPr },
   };
   const para = (r: Row) => {
     const p = protos[r.style];

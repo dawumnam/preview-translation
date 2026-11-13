@@ -22,6 +22,14 @@ export interface StyleOptions {
   directMin: number;
 }
 
+/**
+ * The human writers put the TC of a shot line a little after the camera cut:
+ * 0 to 3 s for most lines (median 1.4 s over nine episodes). With cut + 2 s
+ * the TC is within 3 s of the writer's TC for 88% of the shot lines at a cut
+ * (76% with the time of the cut itself).
+ */
+export const CUT_LAG = 2;
+
 export const HOUSE_STYLE: StyleOptions = { direct: "house", tcGap: 8, foreignGap: 10, directForeign: "drop", directMin: 30 };
 
 const CREW = new Set(["피", "카감"]);
@@ -36,11 +44,13 @@ export function mergeWindows(windows: WindowOut[], cuts: number[]): PreviewLine[
       if (l.kind === "shot") {
         // The take was already running when the window started.
         if (!w.startsAtCut && l.tc! - w.start < 2.5) continue;
-        const cut = cuts.find((c) => Math.abs(c - l.tc!) <= 2.5);
-        const tc = cut ?? l.tc!;
+        const k = cuts.findIndex((c) => Math.abs(c - l.tc!) <= 2.5);
+        const tc = k >= 0 ? cuts[k] : l.tc!;
         const last = out[out.length - 1];
         if (last?.kind === "shot" && Math.abs(last.tc! - tc) < 1.5) continue;
-        out.push({ ...l, tc });
+        // The order of the lines follows the cut; the document shows a TC a little after it.
+        const next = k >= 0 ? (cuts[k + 1] ?? Infinity) : Infinity;
+        out.push(k >= 0 ? { ...l, tc, tcDoc: Math.min(tc + CUT_LAG, Math.max(tc, next - 1)) } : { ...l, tc });
       } else out.push({ ...l });
     }
   }
@@ -112,7 +122,7 @@ export function tcShown(lines: PreviewLine[], o: StyleOptions = HOUSE_STYLE): bo
   let last = -Infinity;
   return lines.map((l) => {
     if (l.tc === undefined || l.kind === "scene" || l.kind === "note") return false;
-    const sec = Math.floor(l.tc);
+    const sec = Math.floor(l.tcDoc ?? l.tc);
     const show = l.kind === "shot" ? sec !== last : sec - last >= o.tcGap;
     if (show) last = sec;
     return show;
